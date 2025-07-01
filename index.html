@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <!-- Meta tags for social media banners, these should be filled in appropriatly as they are your "business card" -->
+  <!-- Replace the content tag with appropriate information -->
+  <meta name="description" content="SeaLion: Semantic Part-Aware Latent Point Diffusion Models for 3D Generation">
+  <meta property="og:title" content="SeaLion: Semantic Part-Aware Latent Point Diffusion Models for 3D Generation"/>
+  <meta property="og:description" content="SeaLion: Semantic Part-Aware Latent Point Diffusion Models for 3D Generation"/>
+  <meta property="og:url" content="https://Dekai21.github.io/SeaLion/"/>
+  <!-- Path to banner image, should be in the path listed below. Optimal dimenssions are 1200X630-->
+  <!-- <meta property="og:image" content="images/overview.jpg" /> -->
+  <!-- <meta property="og:image:width" content="1245"/> -->
+  <!-- <meta property="og:image:height" content="562"/> -->
+
+
+  <!-- Path to banner image, should be in the path listed below. Optimal dimenssions are 1200X600-->
+  <!-- <meta name="twitter:image" content="images/overview.jpg"> -->
+  <!-- <meta name="twitter:card" content="summary_large_image"> -->
+  <!-- Keywords for your paper to be indexed by-->
+  <meta name="keywords" content="Point Cloud Generation, Diffusion Models">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+
+  <title>SeaLion: Semantic Part-Aware Latent Point Diffusion Models for 3D Generation</title>
+  <!-- <link rel="icon" type="image/x-icon" href="static/images/favicon.icon"> -->
+  <link rel="icon" type="image/x-icon" href="images/icon.png">
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro"
+  rel="stylesheet">
+
+  <link rel="stylesheet" href="static/css/bulma.min.css">
+  <link rel="stylesheet" href="static/css/bulma-carousel.min.css">
+  <link rel="stylesheet" href="static/css/bulma-slider.min.css">
+  <link rel="stylesheet" href="static/css/fontawesome.all.min.css">
+  <link rel="stylesheet"
+  href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="static/css/index.css">
+
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script src="https://documentcloud.adobe.com/view-sdk/main.js"></script>
+  <script defer src="static/js/fontawesome.all.min.js"></script>
+  <script src="static/js/bulma-carousel.min.js"></script>
+  <script src="static/js/bulma-slider.min.js"></script>
+  <script src="static/js/index.js"></script>
+
+  <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+  <script id="MathJax-script" async
+    src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+  </script>
+</head>
+<body>
+
+
+  <section class="hero">
+    <div class="hero-body">
+      <div class="container is-max-desktop">
+        <div class="columns is-centered">
+          <div class="column has-text-centered">
+            <h1 class="title is-1 publication-title">SeaLion: Semantic Part-Aware Latent Point Diffusion Models for 3D Generation</h1>
+            <div class="is-size-5 publication-authors">
+              <!-- Paper authors -->
+              <span class="author-block">
+              <a href="https://dekai21.github.io/" target="_blank">Dekai Zhu<sup>1,2,3</sup></a>,</span> &nbsp;
+              <span class="author-block">
+              <a href="https://scholar.google.com/citations?user=HSlGGvwAAAAJ&hl=en" target="_blank">Yan Di<sup>1</sup></a>,</span> &nbsp;
+              <span class="author-block">
+              <a href="https://de.linkedin.com/in/stefangavranovic" target="_blank">Stefan Gavranovic<sup>2</sup></a>,</span> &nbsp;
+              <span class="author-block">
+              <a href="https://scholar.google.de/citations?hl=en&user=ELOVd8sAAAAJ&view_op=list_works" target="_blank">Slobodan Ilic<sup>1,2</sup></a></span>
+            </div>
+
+            <div class="is-size-5 publication-authors">
+              <span class="author-block"><sup>1</sup> Technical University of Munich, <sup>2</sup> Siemens AG, <sup>3</sup> Munich Center for Machine Learning
+                <!-- <br> Under reviewed. </span> -->
+              <!-- <span class="eql-cntrb"><small><br><sup>*</sup>Indicates Equal Contribution</small> -->
+                <p style="font-weight: bold;">CVPR 2025</p>
+              </span>
+            </div>
+
+            <div class="column has-text-centered">
+              <div class="publication-links">
+                    <!-- Arxiv PDF link -->
+                <span class="link-block">
+                  <a href="https://arxiv.org/abs/2505.17721" target="_blank"
+                  class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                    <i class="fas fa-file-pdf"></i>
+                  </span>
+                  <span>Paper</span>
+                </a>
+              </span>
+
+              <!-- Github link -->
+              <span class="link-block">
+                <a href="" target="_blank"
+                class="external-link button is-normal is-rounded is-dark">
+                <span class="icon">
+                  <i class="fab fa-github"></i>
+                </span>
+                <span>Code (coming soon)</span>
+                </a>
+              </span>
+
+              <!-- ArXiv abstract Link -->
+              <!-- <span class="link-block">
+                <a href="https://arxiv.org/abs/2301.02561" target="_blank"
+                class="external-link button is-normal is-rounded is-dark">
+                <span class="icon">
+                  <i class="ai ai-arxiv"></i>
+                </span>
+                <span>arXiv (old version)</span>
+                </a>
+              </span> -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- <section class="hero teaser" id="Demo">
+  <div class="container is-max-desktop">
+      <div class="hero-body has-text-centered">
+      <video poster="" id="tree" autoplay controls loop height="100%">
+        <source src="images/mvn_dk.mp4"
+        type="video/mp4">
+      </video>
+    </div>
+  </div>
+</section> -->
+
+
+<!-- Paper abstract -->
+<section class="section hero" id="Abstract">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-five-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            Denoising diffusion probabilistic models have achieved significant success in point cloud generation, 
+            enabling numerous downstream applications, such as generative data augmentation and 3D model editing. 
+            However, little attention has been given to generating point clouds with point-wise segmentation labels, 
+            as well as to developing evaluation metrics for this task. Therefore, in this paper, we present <strong>SeaLion</strong>, 
+            a novel diffusion model designed to generate high-quality and diverse point cloud with fine-grained segmentation labels. 
+            Specifically, we introduce the <strong>semantic part-aware latent point diffusion</strong> technique, 
+            which leverages the intermediate features of the generative models to jointly predict the noise for perturbed latent points and associated part segmentation labels during the denoising process, 
+            and subsequently decodes the latent points to point clouds conditioned on part segmentation labels. 
+            To effectively evaluate the quality of generated point clouds, 
+            we introduce a novel point cloud pairwise distance calculation method named <strong>part-aware Chamfer distance (p-CD)</strong>. 
+            This method enables existing metrics, such as 1-NNA, to measure both the local structural quality and inter-part coherence of generated point clouds. 
+            Experiments on the large-scale synthetic dataset ShapeNet and real-world medical dataset IntrA, 
+            demonstrate that SeaLion achieves remarkable performance in generation quality and diversity, 
+            outperforming the existing state-of-the-art model, DiffFacto, by <strong>13.33%</strong> and <strong>6.52%</strong> on 1-NNA (p-CD) across the two datasets. 
+            Experimental analysis shows that SeaLion can be trained semi-supervised, thereby reducing the demand for labeling efforts. 
+            Lastly, we validate the applicability of SeaLion in generative data augmentation for training segmentation models and the capability of SeaLion to serve as a tool for part-aware 3D shape editing.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <br />
+  <div class="container is-max-desktop">
+    <div class="columns is-centered is-four-fifths">
+      <div class="column is-four-fifths is-centered">
+          <img src="images/teaser.png" alt="MY ALT TEXT" style="width: 100%;"/>
+      </div>
+    </div>
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <div class="content has-text-justified">
+          <p>
+            <strong>Figure 1:</strong> Leveraging the proposed semantic part-aware latent point diffusion technique, 
+            <strong>SeaLion</strong> generates high-quality point clouds with high inter-part coherence and accurate point-wise segmentation labels. 
+            The generated data has significant application potential, including enlarging the training sets for data-driven 3D segmentation models, 
+            particularly in medical examination domains where labeled data is scarce (&#9312;). 
+            Moreover, SeaLion can serve as an editing tool, allowing designers to easily replace parts within a 3D shape.
+            &#9313; shows examples of generated cars with varying shapes (<span class="green-text">green</span>) and a fixed-shape hood (<span class="gray-text">gray</span>).
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section hero" id="Pipeline">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-five-fifths">
+        <h2 class="title is-3">Pipeline & Architecture</h2>
+        <div class="content has-text-justified">
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="container is-max-desktop">
+      <div class="column is-full-width is-centered">
+          <img src="images/pipeline.png" alt="MY ALT TEXT" style="width: 100%;"/>
+          <div class="content has-text-centered">
+            <p>
+              &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; <strong>&nbsp; &nbsp;Figure 2</strong>
+            </p>
+          </div>
+      </div>
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-five-fifths">
+        <div class="content has-text-justified">
+
+          <p>
+            <strong>(a) &nbsp;Training:</strong> The generative model develops semantic part awareness by being trained to reconstruct input point clouds \(x\) guided by segmentation encodings \(y\), 
+            and to jointly predict the noise \(\hat{\epsilon}_t\) for perturbed latent points \(h_t\) and segmentation labels \(\hat{y}_t\) at diffusion step \(t\).
+          </p>
+          <p>
+            <strong>(b) &nbsp;Inference:</strong> Starting from Gaussian noise, the diffusion modules generate \(z_0\), \(h_0\), and \(\hat{y}\). 
+            Then, the conditional decoding guided by \(z_0\) and \(\hat{y}\) generates a point cloud \(\hat{x}\) that maintains strong alignment with \(\hat{y}\).
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</br>
+</br>
+  <div class="container is-max-desktop">
+    <div class="columns is-centered is-three-fifths">
+      <div class="column is-two-fifths is-centered">
+          <img src="images/point_diffusion.png" alt="MY ALT TEXT" style="width: 100%;"/>
+      </div>
+    </div>
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-five-fifths">
+        <div class="content has-text-justified">
+          <p>
+            <strong>Figure 3:</strong> Data flow in the point-level diffusion module \(\epsilon_h\). The input, perturbed latent points \(h_t\) at step \(t\), 
+            is down-sampled and transformed to common representations \(r_c\) (<span class="yellow-text">yellow</span>). 
+            Two parallel up-sampling paths concatenate \(r_c\) with task-specific features, 
+            \(r_\epsilon\) (<span class="green-text">green</span>) and \(r_y\) (<span class="red-text">red</span>), 
+            to separately predict the noise \(\hat{\epsilon_t}\) and the segmentation encoding \(\hat{y_t}\).
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="hero teaser" id="Video-Introduction">
+  <div class="container is-max-desktop">
+    <div class="hero-body has-text-centered">
+      <h2 class="title is-3" style="margin-top: 50px;">Generated Point Clouds</h2>
+      <div class="videos-grid">
+        <!-- Video 1 -->
+        <div class="video-item">
+          <video poster="Airplanes" autoplay controls muted loop height="100%">
+            <source src="videos/airplanes.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Airplanes
+            </p>
+          </div>
+        </div>
+        <!-- Video 2 -->
+        <div class="video-item">
+          <video poster="" autoplay controls muted loop height="100%">
+            <source src="videos/cars.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Cars
+            </p>
+          </div>
+        </div>
+        <!-- Video 3 -->
+        <div class="video-item">
+          <video poster="" autoplay controls muted loop height="100%">
+            <source src="videos/chairs.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Chairs
+            </p>
+          </div>
+        </div>
+        <!-- Video 4 -->
+        <div class="video-item">
+          <video poster="" autoplay controls muted loop height="100%">
+            <source src="videos/guitars.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Guitars
+            </p>
+          </div>
+        </div>
+        <!-- Video 5 -->
+        <div class="video-item">
+          <video poster="" autoplay controls muted loop height="100%">
+            <source src="videos/lamps.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Lamps
+            </p>
+          </div>
+        </div>
+        <!-- Video 6 -->
+        <div class="video-item">
+          <video poster="" autoplay controls muted loop height="100%">
+            <source src="videos/tables.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Tables
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .videos-grid {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between; /* Spread videos across the row */
+    gap: 15px; /* Adjust spacing between videos */
+    max-width: 1200px; /* Set a wider maximum width */
+    margin: 0 auto; /* Center the grid */
+  }
+  .video-item {
+    flex: 1 1 calc(50% - 20px); /* 3 columns */
+    max-width: calc(50% - 20px);
+    box-sizing: border-box;
+  }
+  video {
+    width: 100%;
+    height: auto;
+  }
+  img {
+    width: 100%;
+  }
+  strong {
+    letter-spacing: normal;
+    word-spacing: -3px;
+  }
+  .green-text {
+    color: rgb(84, 179, 69);
+  }
+  .gray-text {
+    color: rgb(153, 153, 153);
+  }
+  .red-text {
+    color: rgb(240, 67, 50);
+  }
+  .yellow-text {
+    color: rgb(243, 210, 102);
+  }
+</style>
+
+
+
+<!--BibTex citation -->
+<section class="section" id="BibTeX">
+  <div class="container is-max-desktop content">
+    <h2 class="title">BibTeX</h2>
+    <pre><code>@inproceedings{Zhu2025SeaLionSP,
+  title={SeaLion: Semantic Part-Aware Latent Point Diffusion Models for 3D Generation},
+  author={Dekai Zhu and Yan Di and Stefan Gavranovic and Slobodan Ilic},
+  year={2025},
+  url={https://api.semanticscholar.org/CorpusID:278308917}
+}</code></pre>
+  </div>
+</section>
+<!--End BibTex citation -->
+
+
+<footer class="footer">
+  <div class="container">
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content">
+
+          <p>
+            This page was built using the <a href="https://github.com/eliahuhorwitz/Academic-project-page-template" target="_blank">Academic Project Page Template</a> under the license <a rel="license"  href="http://creativecommons.org/licenses/by-sa/4.0/" target="_blank">Creative
+            Commons Attribution-ShareAlike 4.0 International License</a>. We thank the authors for the open-source code.
+          </p>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<!-- Statcounter tracking code -->
+  
+<!-- You can add a tracker to track page visits by creating an account at statcounter.com -->
+
+    <!-- End of Statcounter Code -->
+
+  </body>
+  </html>
