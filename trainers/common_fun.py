@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
 from loguru import logger
-from utils.vis_helper import visualize_point_clouds_3d
+from utils.vis_helper import visualize_point_clouds_3d, part2color
 from utils.data_helper import normalize_point_clouds
 from utils.checker import *
 
@@ -23,7 +23,9 @@ def validate_inspect_noprior(model,
                              test_loader=None,  # can be None
                              has_shapelatent=False,
                              bound=1.5, val_class_label=None, tr_class_label=None,
-                             cfg={}):
+                             cfg={},
+                             part_types=None,
+                             normals=None):
     """ visualize the samples, and recont if needed 
     """
     assert(has_shapelatent)
@@ -38,13 +40,18 @@ def validate_inspect_noprior(model,
     if need_sample:
         z_prior = model.pz(w_prior, sample_num_points)
         z_list.append(z_prior)
+    kwargs = {'part_types': part_types} if part_types is not None else {}
+    if normals is not None:
+        kwargs['normals'] = normals
     if val_class_label is not None:
-        output = model.recont(val_x, class_label=val_class_label)
+        output = model.recont(val_x, class_label=val_class_label, **kwargs)
     else:
-        output = model.recont(val_x)  # torch.cat([val_x, tr_x]))
+        output = model.recont(val_x, **kwargs)  # torch.cat([val_x, tr_x]))
     gen_x = output['final_pred']
     vis_order = cfg.viz.viz_order
     vis_args = {'vis_order': vis_order}
+
+    rgb = part2color(part_types)
 
     # vis the samples
     if num_samples > 0:
@@ -52,7 +59,7 @@ def validate_inspect_noprior(model,
         for i in range(num_samples):
             points = gen_x[i]
             points = normalize_point_clouds([points])[0]
-            img = visualize_point_clouds_3d([points], bound=bound, **vis_args)
+            img = visualize_point_clouds_3d([points], bound=bound, rgb=rgb[i], **vis_args)
             img_list.append(img)
         img = np.concatenate(img_list, axis=2)
         writer.add_image('sample', torch.as_tensor(img), it)
@@ -64,17 +71,18 @@ def validate_inspect_noprior(model,
             points = gen_x[num_samples + i]
             points = normalize_point_clouds([points])  # val_x[i], points])
             img = visualize_point_clouds_3d(
-                points, ['rec#%d' % i], bound=bound, **vis_args)
+                points, ['rec#%d' % i], bound=bound, rgb=rgb[i], **vis_args)
             img_list.append(img)
         gt_list = []
         for i in range(num_recon_val):
             points = normalize_point_clouds([val_x[i]])
             img = visualize_point_clouds_3d(
-                points, ['gt#%d' % i], bound=bound, **vis_args)
+                points, ['gt#%d' % i], bound=bound, rgb=rgb[i], **vis_args)
             gt_list.append(img)
         img = np.concatenate(img_list, axis=2)
         gt = np.concatenate(gt_list, axis=2)
         img = np.concatenate([gt, img], axis=1)
+        writer.add_scalar('recont-val/L2', ((val_x - gen_x)**2).mean().item(), it)
 
         if 'vis/latent_pts' in output:
             latent_pts = output['vis/latent_pts']
@@ -83,7 +91,7 @@ def validate_inspect_noprior(model,
                 points = latent_pts[num_samples + i]
                 points = normalize_point_clouds([points])
                 latent = visualize_point_clouds_3d(
-                    points, ['latent#%d' % i], bound=bound, **vis_args)
+                    points, ['latent#%d' % i], bound=bound, rgb=rgb[i], **vis_args)
                 img_list.append(latent)
             latent_list = np.concatenate(img_list, axis=2)
             img = np.concatenate([img, latent_list], axis=1)

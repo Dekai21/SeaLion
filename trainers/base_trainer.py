@@ -18,8 +18,8 @@ import torchvision
 import torch.distributed as dist
 from utils.evaluation_metrics_fast import print_results 
 from utils.checker import *
-from utils.vis_helper import visualize_point_clouds_3d
-from utils.eval_helper import compute_score, get_ref_pt, get_ref_num
+from utils.vis_helper import visualize_point_clouds_3d, part2color
+from utils.eval_helper import compute_score, get_ref_pt, get_ref_num, compute_score_2
 from utils import model_helper, exp_helper, data_helper
 from utils.utils import infer_active_variables 
 from utils.data_helper import normalize_point_clouds
@@ -152,7 +152,7 @@ class BaseTrainer(ABC):
         logger.info('start build_data')
         cfg, args = self.cfg, self.args
         self.args.eval_trainnll = cfg.eval_trainnll
-        data_lib = importlib.import_module(cfg.data.type)
+        data_lib = importlib.import_module(cfg.data.type)   # input: 'datasets.pointflow_datasets'
         loaders = data_lib.get_data_loaders(cfg.data, args)
         train_loader = loaders['train_loader']
         test_loader = loaders['test_loader']
@@ -239,9 +239,13 @@ class BaseTrainer(ABC):
                         (step) % int(cfg.viz.viz_freq) == 0
                     vis_recont = visualize
                     if vis_recont:
-                        self.vis_recont(logs_info, writer, step)
+                        if cfg.latent_pts.concat_part_type:
+                            logs_info['part_types'] = data['part_types']
+                        self.vis_recont(logs_info, writer, step)    # 'pred' and 'target' are the same?
                     if visualize:
                         self.model.eval()
+                        # if self.cfg.trainer.type != 'trainers.hvae_trainer':
+                        #     self.eval_sample(step=step)
                         self.vis_sample(writer, step=step,
                                         include_pred_x0=False)
                         self.model.train()
@@ -281,7 +285,7 @@ class BaseTrainer(ABC):
 
             ## -- run eval -- ##
             if int(cfg.viz.val_freq) > 0 and (epoch + 1) % int(cfg.viz.val_freq) == 0 and \
-                    args.global_rank == 0:
+                    args.global_rank == 0 and self.cfg.trainer.type == 'trainers.hvae_trainer':
                 eval_score = self.eval_nll(step=step, save_file=False)
                 if eval_score < self.best_eval_score or self.best_eval_score < 0:
                     self.save(save_name='best_eval.pth',  # save_dir=snapshot_dir,
@@ -335,7 +339,7 @@ class BaseTrainer(ABC):
         # x_0_pred: recont
         # x_t: intermidiate sample at t (if t is not None)
         x_0_pred, x_0, x_t = output.get('x_0_pred', None), \
-            output.get('x_0', None), output.get('x_t', None)
+            output.get('x_0', None), output.get('x_t', None)    # [B, N(2048), 3]*3
         if x_0_pred is None or x_0 is None or x_t is None:
             logger.info('x_0_pred: None? {}; x_0: None? {}, x_t: None? {}',
                         x_0_pred is None, x_0 is None, x_t is None)
@@ -348,6 +352,7 @@ class BaseTrainer(ABC):
         t = output.get('t', None)
         nvis = min(max(x_0.shape[0], 2), 5)
         img_list = []
+        rgb = part2color(output['part_types'])
         for b in range(nvis):
             x_list, name_list = [], []
             x_list.append(x_0_pred[b])
@@ -363,19 +368,20 @@ class BaseTrainer(ABC):
 
             for k, v in output.items():
                 if 'vis/' in k:
-                    x_list.append(v[b])
-                    name_list.append(k)
+                    x_list.append(v[b]) # [B, N(2048), 3]
+                    name_list.append(k) # 'vis/eps'
             if normalize_pts:
                 x_list = normalize_point_clouds(x_list)
 
             vis_order = self.cfg.viz.viz_order
             vis_args = {'vis_order': vis_order}
-
+            vis_args['rgb'] = [rgb[b]] * len(x_list)
             img = visualize_point_clouds_3d(x_list, name_list, **vis_args)
             img_list.append(img)
         img_list = torchvision.utils.make_grid(
             [torch.as_tensor(a) for a in img_list], pad_value=0)
         writer.add_image('vis_out/recont-train', img_list, step)
+        writer.add_scalar('recont-train/L2', ((x_0_pred - x_0)**2).mean().item(), step)
 
     @torch.no_grad()
     def eval_sample(self, step=0):
@@ -389,8 +395,11 @@ class BaseTrainer(ABC):
         test_size = batch_size_test * len(test_loader)
         sample_num_points = self.cfg.data.tr_max_sample_points
         cates = self.cfg.data.cates
-        num_ref = get_ref_num(
-            cates) if self.cfg.num_ref == 0 else self.cfg.num_ref
+        # num_ref = get_ref_num(
+        #     cates) if self.cfg.num_ref == 0 else self.cfg.num_ref
+        # num_ref = 20
+        num_ref = self.val_x_origin.shape[0]
+        num_parts = self.cfg.data.num_parts
 
         # option for post-processing
         if self.cfg.data.recenter_per_shape or self.cfg.data.normalize_shape_box or self.cfg.data.normalize_range:
@@ -443,7 +452,8 @@ class BaseTrainer(ABC):
         ##    logger.info('save vis at {}', path)
 
         # ---- gen_pcs ---- #
-        if True:
+        LOAD_GEN_PCS = False
+        if not LOAD_GEN_PCS:
             len_test_loader = num_ref // batch_size_test + 1
             if self.args.distributed:
                 num_gen_iter = max(1, len_test_loader // self.args.global_size)
@@ -470,9 +480,10 @@ class BaseTrainer(ABC):
                                 num_points=sample_num_points,
                                 device_str=device.type,
                                 for_vis=False,
-                                ddim_step=ddim_step).permute(0, 2, 1).contiguous()  # B,3,N->B,N,3
+                                ddim_step=ddim_step,
+                                part_types=self.part_types).permute(0, 2, 1).contiguous()  # B,3,N->B,N,3
                 assert(
-                    x.shape[-1] == input_dim), f'expect x: B,N,{input_dim}; get {x.shape}'
+                    x.shape[-1] == input_dim or x.shape[-1] == input_dim + num_parts), f'expect x: B,N,{input_dim}; get {x.shape}'
                 index_start = index_start + batch_size_test
                 gen_pcs.append(x.detach().cpu())
 
@@ -487,32 +498,36 @@ class BaseTrainer(ABC):
             gen_pcs = torch.cat(gen_pcs_list, dim=0).cpu()
             logger.info('after gather: {}, rank={}',
                         gen_pcs.shape, self.args.global_rank)
-        logger.info('save as %s' % output_name)
-        if self.args.global_rank == 0:
-            torch.save(gen_pcs, output_name)
-        else:
-            logger.info('return for rank {}', self.args.global_rank)
-            return  # only do eval on one gpu
-        if writer is not None:
-            img_list = []
-            for i in range(1):
-                gen_list = [gen_pcs[k] for k in range(len(gen_pcs))][:8]
-                norm_ref = data_helper.normalize_point_clouds(gen_list)
-                img = visualize_point_clouds_3d(norm_ref, [f'gen-{k}' for k in range(len(norm_ref))]
-                                                )
-                img_list.append(torch.as_tensor(img) / 255.0)
-            grid = torchvision.utils.make_grid(img_list)
-            logger.info('ndarr: {}, range: {} img list: {} ', grid.shape,
-                        grid.max(), img_list[0].shape, img_list[0].max())
-            writer.add_image('sample', grid, step)
-            logger.info('\n\t' + writer.url)
+        if not LOAD_GEN_PCS:
+            logger.info('save as %s' % output_name)
+            if self.args.global_rank == 0:
+                torch.save(gen_pcs, output_name)
+                # quit()
+            else:
+                logger.info('return for rank {}', self.args.global_rank)
+                return  # only do eval on one gpu
+            shape_str = '{}: gen_pcs: {}'.format(self.cfg.save_dir, gen_pcs.shape)
+            logger.info(shape_str)
+        
+        # if writer is not None:
+        #     img_list = []
+        #     for i in range(1):
+        #         gen_list = [gen_pcs[k] for k in range(len(gen_pcs))][:8]
+        #         norm_ref = data_helper.normalize_point_clouds(gen_list)
+        #         img = visualize_point_clouds_3d(norm_ref, [f'gen-{k}' for k in range(len(norm_ref))]
+        #                                         )
+        #         img_list.append(torch.as_tensor(img) / 255.0)
+        #     grid = torchvision.utils.make_grid(img_list)
+        #     logger.info('ndarr: {}, range: {} img list: {} ', grid.shape,
+        #                 grid.max(), img_list[0].shape, img_list[0].max())
+        #     writer.add_image('sample', grid, step)
+        #     logger.info('\n\t' + writer.url)
         #logger.info('early exit')
         # exit()
 
-        shape_str = '{}: gen_pcs: {}'.format(self.cfg.save_dir, gen_pcs.shape)
-        logger.info(shape_str)
-
-        ref = get_ref_pt(self.cfg.data.cates, self.cfg.data.type)
+        # ref = get_ref_pt(self.cfg.data.cates, self.cfg.data.type)   # original
+        ref = torch.cat([self.val_x_origin, self.val_part_types], dim=-1)[:num_ref]
+        # torch.save(ref, 'ref_lamp.pt')
         if ref is None:
             logger.info('Not computing score')
             return 1
@@ -521,11 +536,20 @@ class BaseTrainer(ABC):
         print_kwargs = {'dataset': self.cfg.data.cates,
                         'hash': self.cfg.hash + tag,
                         'step': step_str,
-                        'epoch': epoch_str+'-'+os.path.basename(ref).split('.')[0]}
+                        'epoch': epoch_str}
+                        # 'epoch': epoch_str+'-'+os.path.basename(ref).split('.')[0]}
         self.model = self.model.cpu()
         torch.cuda.empty_cache()
         # -- compute the generation metric -- #
-        results = compute_score(output_name, ref_name=ref,
+        # results = compute_score(output_name, ref_name=ref,
+        #                         writer=writer,
+        #                         batch_size_test=min(
+        #                             5, self.cfg.data.batch_size_test),
+        #                         norm_box=norm_box,
+        #                         **print_kwargs)
+        if LOAD_GEN_PCS:
+            output_name = "/data/dekai/diffuse_seg/ShapeNetPart/airplane/111704_airplane_uncond_ddpm_train_l2e-4GlobalP2048D04_B8/samples_airplane_6505s100Hc2160_test_2024-11-18-23-48diet.pt"
+        results = compute_score_2(output_name, ref_pcs=ref,
                                 writer=writer,
                                 batch_size_test=min(
                                     5, self.cfg.data.batch_size_test),
@@ -534,31 +558,36 @@ class BaseTrainer(ABC):
 
         self.model = self.model.to(device)
         # ---- write to logger ---- #
-        writer.add_scalar('test/Coverage_CD', results['lgan_cov-CD'], step)
-        writer.add_scalar('test/Coverage_EMD', results['lgan_cov-EMD'], step)
-        writer.add_scalar('test/MMD_CD', results['lgan_mmd-CD'], step)
-        writer.add_scalar('test/MMD_EMD', results['lgan_mmd-EMD'], step)
-        writer.add_scalar('test/1NN_CD', results['1-NN-CD-acc'], step)
-        writer.add_scalar('test/1NN_EMD', results['1-NN-EMD-acc'], step)
-        writer.add_scalar('test/JSD', results['jsd'], step)
+        writer.add_scalar('test/Coverage_CD', results['lgan_cov-CD-part'], step)
+        # writer.add_scalar('test/Coverage_EMD', results['lgan_cov-EMD'], step)
+        writer.add_scalar('test/MMD_CD', results['lgan_mmd-CD-part'], step)
+        # writer.add_scalar('test/MMD_EMD', results['lgan_mmd-EMD'], step)
+        writer.add_scalar('test/1NN_CD', results['1-NN-CD-part-acc'], step)
+        # writer.add_scalar('test/1NN_EMD', results['1-NN-EMD-acc'], step)
+        # writer.add_scalar('test/JSD', results['jsd'], step)
         msg = f'step={step}'
-        msg += '\n[Test] MinMatDis | CD %.6f | EMD %.6f' % (
-            results['lgan_mmd-CD'], results['lgan_mmd-EMD'])
-        msg += '\n[Test] Coverage  | CD %.6f | EMD %.6f' % (
-            results['lgan_cov-CD'], results['lgan_cov-EMD'])
-        msg += '\n[Test] 1NN-Accur | CD %.6f | EMD %.6f' % (
-            results['1-NN-CD-acc'], results['1-NN-EMD-acc'])
-        msg += '\n[Test] JsnShnDis | %.6f ' % (results['jsd'])
+        # msg += '\n[Test] MinMatDis | CD %.6f | EMD %.6f' % (
+        #     results['lgan_mmd-CD'], results['lgan_mmd-EMD'])
+        # msg += '\n[Test] Coverage  | CD %.6f | EMD %.6f' % (
+        #     results['lgan_cov-CD'], results['lgan_cov-EMD'])
+        # msg += '\n[Test] 1NN-Accur | CD %.6f | EMD %.6f' % (
+        #     results['1-NN-CD-acc'], results['1-NN-EMD-acc'])
+        # msg += '\n[Test] JsnShnDis | %.6f ' % (results['jsd'])
+        msg += '\n[Test] MinMatDis | CD %.6f ' % (results['lgan_mmd-CD-part'])
+        msg += '\n[Test] Coverage  | CD %.6f ' % (results['lgan_cov-CD-part'])
+        msg += '\n[Test] 1NN-Accur | CD %.6f ' % (results['1-NN-CD-part-acc'])
 
         logger.info(msg)
-        with open(os.path.join(self.cfg.save_dir, 'eval_out.txt'), 'a') as f:
-            f.write(shape_str+'\n')
-            f.write(msg+'\n')
+        if not LOAD_GEN_PCS:
+            with open(os.path.join(self.cfg.save_dir, 'eval_out.txt'), 'a') as f:
+                f.write(shape_str+'\n')
+                f.write(msg+'\n')
         # self.cfg.data.cates, self.cfg.hash, step_str, epoch_str)
         msg = print_results(results, **print_kwargs)
         with open(os.path.join(self.cfg.save_dir, 'eval_out.txt'), 'a') as f:
             f.write(msg+'\n')
         logger.info('\n\t' + writer.url)
+        quit()
 
     def vis_sample(self, writer, num_vis=None, step=0, include_pred_x0=True,
                    save_file=None):
@@ -651,6 +680,9 @@ class BaseTrainer(ABC):
         val_input = []
         val_cls = []
         prior_cond = []
+        part_types = []
+        model_ids = []
+        normals = []
         for val_batch in self.test_loader:
             val_x.append(val_batch['tr_points'])
             val_cls.append(val_batch['cate_idx'])
@@ -658,16 +690,27 @@ class BaseTrainer(ABC):
                 val_input.append(val_batch['input_pts'])
             if 'prior_cond' in val_batch:
                 prior_cond.append(val_batch['prior_cond'])
+            if 'part_types' in val_batch:
+                part_types.append(val_batch['part_types'])
+            if 'mid' in val_batch:
+                model_ids.append(val_batch['mid'])
+            if 'normals' in val_batch:
+                normals.append(val_batch['normals'])
             c += val_x[-1].shape[0]
-            if c >= num_val_samples:
-                break
-        self.val_x = torch.cat(val_x, dim=0)[:num_val_samples].to(device)
+            # if c >= num_val_samples:
+            #     break
+        self.val_x = torch.cat(val_x, dim=0)[:num_val_samples].to(device)   # [B(3), 2048, 3]
         # this line may trigger error, change dataset output cate_idx from string to int can fix this issue
         self.val_cls = torch.cat(val_cls, dim=0)[:num_val_samples].to(device)
         self.prior_cond = torch.cat(prior_cond, dim=0)[:num_val_samples].to(
             device) if len(prior_cond) else None
-        self.val_input = torch.cat(val_input, dim=0)[:num_val_samples].to(
+        self.val_input = torch.cat(val_input, dim=0)[:num_val_samples].to(  # [B(3), 2048, 3]
             device) if len(val_input) else None
+        self.part_types = torch.cat(part_types, dim=0)[:num_val_samples].to(device) if len(part_types) else None
+        self.model_ids = sum(model_ids, []) if len(model_ids) else None
+        self.normals = torch.cat(normals, dim=0)[:num_val_samples].to(device) if len(normals) else None   # [B(3), 2048, 3]
+        self.val_x_origin = torch.cat(val_x, dim=0)
+        self.val_part_types = torch.cat(part_types, dim=0) if len(part_types) else None
         c = 0
         tr_x = []
         m_x = []
@@ -688,7 +731,7 @@ class BaseTrainer(ABC):
         self.tr_x = torch.cat(tr_x, dim=0)[:num_val_samples].to(device)
         self.m_pcs = torch.cat(m_x, dim=0)[:num_val_samples].to(device)
         self.s_pcs = torch.cat(s_x, dim=0)[:num_val_samples].to(device)
-        logger.info('tr_x: {}, m_pcs: {}, s_pcs: {}, val_x: {}',
+        logger.info('tr_x: {}, m_pcs: {}, s_pcs: {}, val_x: {}',    # tr_x: torch.Size([3, 2048, 3]), m_pcs: torch.Size([3, 1, 3]), s_pcs: torch.Size([3, 1, 1]), val_x: torch.Size([3, 2048, 3])
                     self.tr_x.shape, self.m_pcs.shape, self.s_pcs.shape,  self.val_x.shape)
 
         self.w_prior = torch.randn(
@@ -732,6 +775,7 @@ class BaseTrainer(ABC):
         else:
             data_loader = self.test_loader
         gen_pcs, ref_pcs = [], []
+        part_type_pcs = []
         output_name = os.path.join(self.cfg.save_dir, f'recont_{step}{tag}.pt')
         output_name_metric = os.path.join(
             self.cfg.save_dir, f'recont_{step}{tag}_metric.pt')
@@ -749,6 +793,9 @@ class BaseTrainer(ABC):
             inputs = val_batch['input_pts'].to(
                 device) if 'input_pts' in val_batch else None  # the noisy points
             model_kwargs = {}
+            if "part_types" in val_batch:
+                model_kwargs.update({"part_types": val_batch["part_types"]})
+                part_type_pcs.append(val_batch["part_types"])
 
             output = self.model.get_loss(
                 val_x, it=step, is_eval_nll=1, noisy_input=inputs, **model_kwargs)
@@ -786,8 +833,11 @@ class BaseTrainer(ABC):
             v = torch.cat(v, dim=0)
             logger.info('{}={}', k, v.mean())
 
-        gen_pcs = torch.cat(gen_pcs, dim=0)
+        gen_pcs = torch.cat(gen_pcs, dim=0) # [val, N, 3]
         ref_pcs = torch.cat(ref_pcs, dim=0)
+        part_type_pcs = torch.cat(part_type_pcs, dim=0)
+        assert len(gen_pcs) == len(ref_pcs) == len(part_type_pcs)
+        rgb = part2color(part_type_pcs)
 
         # Save
         if self.writer is not None:
@@ -795,7 +845,7 @@ class BaseTrainer(ABC):
             for i in range(10):
                 points = gen_pcs[i]
                 points = normalize_point_clouds([points])[0]
-                img = visualize_point_clouds_3d([points], bound=1.0)
+                img = visualize_point_clouds_3d([points], bound=1.0, rgb=rgb[i])
                 img_list.append(img)
             img = np.concatenate(img_list, axis=2)
             self.writer.add_image('nll/rec', torch.as_tensor(img), step)
@@ -805,7 +855,7 @@ class BaseTrainer(ABC):
             torch.save(gen_pcs, output_name)
 
         results = compute_NLL_metric(
-            gen_pcs[:, :, :3], ref_pcs[:, :, :3], device, self.writer, output_name, batch_size=20, step=step)
+            gen_pcs[:, :, :3], ref_pcs[:, :, :3], device, self.writer, output_name, batch_size=20, step=step, rgb=rgb)
         score = 0
         for n, v in results.items():
             if 'detail' in n:

@@ -16,14 +16,14 @@ from ..utils import init_temb_fun, mask_inactive_variables
 class SE(nn.Module):
     def __init__(self, channel, reduction=8):
         super().__init__()
-        self.fc = nn.Sequential(
+        self.fc = nn.Sequential(    # channel: 2048 -> 256 -> 2048.
             nn.Conv2d(channel, channel // reduction, 1, 1, bias=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(channel // reduction, channel, 1, 1, bias=False),
             nn.Sigmoid()
         )
 
-    def forward(self, inputs):
+    def forward(self, inputs):  # inputs: [B, D(2048), 1, 1], return: [B, D(2048), 1, 1]
         return inputs * self.fc(inputs)
 
 class ResBlockSEClip(nn.Module):
@@ -66,7 +66,7 @@ class ResBlockSEDrop(nn.Module):
         super().__init__()
         self.non_linearity = nn.ReLU(inplace=True)
         self.input_dim = input_dim
-        self.output_dim = output_dim
+        self.output_dim = output_dim    # 2048
         self.conv1 = nn.Conv2d(input_dim, output_dim, 1, 1)
         self.conv2 = nn.Conv2d(output_dim, output_dim, 1, 1)
         in_ch = self.output_dim
@@ -74,7 +74,7 @@ class ResBlockSEDrop(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.dropout_ratio = dropout
 
-    def forward(self, x, t):
+    def forward(self, x, t):    # x: [B, D(2048), 1, 1], t: [B, D(2048), 1, 1]
         output = x + t
         output = self.conv1(output)
         output = self.non_linearity(output)
@@ -83,7 +83,7 @@ class ResBlockSEDrop(nn.Module):
         output = self.non_linearity(output)
         output = self.SE(output)
         shortcut = x
-        return shortcut + output
+        return shortcut + output    # [B, D(2048), 1, 1]
 
     def __repr__(self):
         return "ResBlockSE_withdropout(%d, %d, drop=%f)" % (
@@ -131,10 +131,12 @@ class Prior(nn.Module):
         self.condition_input = kwargs.get('condition_input', False)
         self.cfg = oargs[0]
         self.clip_forge_enable = self.cfg.clipforge.enable  # kwargs.get('clipforge.enable', 0)
+        self.concat_part_type = self.cfg.latent_pts.concat_part_type_ddpm
+        self.part_type_channels = self.cfg.data.num_parts
 
         logger.info('[Build Resnet Prior] Has condition input: {}; clipforge {}; '
-                    'learn_mixing_logit={}, ', self.condition_input,
-                    self.clip_forge_enable, args.learn_mixing_logit)
+                    'learn_mixing_logit={}; concat_part_type={}, part_type_dim={}', self.condition_input,
+                    self.clip_forge_enable, args.learn_mixing_logit, self.concat_part_type, self.part_type_channels)
 
         self.act = act = nn.SiLU()
         self.num_scales = args.num_scales_dae
@@ -179,7 +181,10 @@ class Prior(nn.Module):
                     args.embedding_type, args.embedding_scale, args.embedding_dim)
         # exit()
         modules = []
-        modules.append(nn.Conv2d(self.embedding_dim, self.embedding_dim * 4, 1, 1))
+        if self.concat_part_type:
+            modules.append(nn.Conv2d(self.embedding_dim + self.part_type_channels, self.embedding_dim * 4, 1, 1))
+        else:
+            modules.append(nn.Conv2d(self.embedding_dim, self.embedding_dim * 4, 1, 1))
         modules.append(nn.Conv2d(self.embedding_dim * 4, nf, 1, 1))
         self.temb_layer = nn.Sequential(*modules)
 
@@ -187,18 +192,24 @@ class Prior(nn.Module):
         input_channels = num_input_channels
         self.input_layer = nn.Conv2d(input_channels, nf, 1, 1)
         in_ch = nf
-        for i_block in range(args.num_cell_per_scale_dae):
+        for i_block in range(args.num_cell_per_scale_dae):  # 8
             modules.append(self.building_block(nf, nf))
         self.output_layer = nn.Conv2d(nf, input_channels, 1, 1)
         self.all_modules = nn.ModuleList(modules)
 
-    def forward(self, x, t, **kwargs):
+    def forward(self, x, t, **kwargs):  # x: [B, D1 or N*4, 1, 1], t: [B], here x is x_t with noise.
         # timestep/noise_level embedding; only for continuous training
         # time embedding
         if t.dim() == 0:
             t = t.expand(1)
         temb = self.temb_fun(t)[:, :, None, None]  # make it 4d
-        temb = self.temb_layer(temb)
+
+        if self.concat_part_type:
+            part_stat = kwargs['part_types'].mean(dim=1)
+            part_stat = - part_stat ** 2 + part_stat * 2
+            part_stat = part_stat[:, :, None, None].to(temb.device)
+            temb = torch.cat([temb, part_stat], dim=1)
+        temb = self.temb_layer(temb)    # [B, 2048, 1, 1]
 
         if self.clip_forge_enable:
             clip_feat = kwargs['clip_feat']
@@ -209,12 +220,12 @@ class Prior(nn.Module):
         # mask out inactive variables
         if self.mixed_prediction and self.is_active is not None:
             x = mask_inactive_variables(x, self.is_active)
-        x = self.input_layer(x)
-        for layer in self.all_modules:
+        x = self.input_layer(x) # [B, D1, 1, 1] -> [B, 2048, 1, 1], hidden dim = 2048
+        for layer in self.all_modules:  # 8 layers
             enc_input = x
-            x = layer(enc_input, temb)
+            x = layer(enc_input, temb)  # [B, D(2048), 1, 1]
 
-        h = self.output_layer(x)
+        h = self.output_layer(x)    # [B, z(128), 1, 1]
         return h
 
 

@@ -92,7 +92,9 @@ def get_evalname(config):
             config.sde.ddim_kappa)
     githash = os.popen('git rev-parse HEAD').read().strip()[:5]
     logger.info('git hash: {}', githash)
-    tag += f"H{githash}"
+    # tag += f"H{githash}"
+    tag += f"H{githash}_test_"
+    tag += time.strftime("%Y-%m-%d-%H-%M", time.localtime())
     return tag
 
 
@@ -115,7 +117,7 @@ def get_expname(config):
         if config.data.tr_max_sample_points != 2048:
             cfg_file_name += 'N%d' % config.data.tr_max_sample_points
         run_time = time.strftime('%m%d')
-        cfg_file_name = run_time + '/' + cfg_file_name
+        # cfg_file_name = run_time + '/' + cfg_file_name
 
     else:
         cfg_file_name = config.exp_name

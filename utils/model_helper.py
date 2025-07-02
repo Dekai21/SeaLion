@@ -16,7 +16,7 @@ from utils.evaluation_metrics_fast import distChamferCUDA, emd_approx, distChamf
 
 def loss_fn(predv, targetv, loss_type, point_dim, batch_size, loss_weight_emd=0.02,
             loss_weight_cdnorm=1,
-            return_dict=False):
+            return_dict=False, **kwargs):
     B = batch_size
     output = {}
 
@@ -58,9 +58,19 @@ def loss_fn(predv, targetv, loss_type, point_dim, batch_size, loss_weight_emd=0.
         output['print/rec_mse'] = loss
 
     elif loss_type == 'l1_sum':
-        loss = F.l1_loss(
-            predv.contiguous().view(-1, point_dim), targetv.view(-1, point_dim),
-            reduction='sum')
+        if 'train_weight' in kwargs.keys():
+            train_weight = kwargs['train_weight']
+            loss = F.l1_loss(predv.contiguous().view(B, -1, point_dim), targetv.view(B, -1, point_dim), reduction='none').sum(dim=[1, 2])
+            # assert loss.shape == train_weight.shape
+            loss = (loss * train_weight.squeeze()).sum()
+        # elif 'pred_seg_weights' in kwargs.keys():
+        #     pred_seg_weights = kwargs['pred_seg_weights']
+        #     loss = F.l1_loss(predv.contiguous().view(B, -1, point_dim), targetv.view(B, -1, point_dim), reduction='none').sum(dim=2)
+        #     loss = (loss * pred_seg_weights).sum()
+        else:
+            loss = F.l1_loss(
+                predv.contiguous().view(-1, point_dim), targetv.view(-1, point_dim),
+                reduction='sum')
         output['print/rec_l1'] = loss
 
     elif loss_type == 'l1_cd':

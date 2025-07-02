@@ -25,7 +25,11 @@ from utils.data_helper import normalize_point_clouds
 
 def init_optimizer_train_2prior(cfg, vae, dae, cond_enc=None):
     args = cfg.sde
-    param_dict_dae = dae.parameters()
+    param_dict_dae = dae.parameters()   
+    # param_dict_dae = []
+    # for name, p in dae.named_parameters():
+    #     if name.split('.')[1] != 'fp_layers_seg' and name.split('.')[1] != 'classifier_seg':
+    #         param_dict_dae.append(p)
     # optimizer for prior
     if args.learning_rate_mlogit > 0:
         raise NotImplementedError
@@ -79,7 +83,7 @@ def init_optimizer_train_2prior(cfg, vae, dae, cond_enc=None):
         # TODO: require using layer in layers/neural_operations
         vae_sn_calculator.add_bn_layers(vae)
     dae_sn_calculator.add_bn_layers(dae)
-    return {
+    return_dict = {
         'vae_scheduler': vae_scheduler,
         'vae_optimizer': vae_optimizer,
         'vae_sn_calculator': vae_sn_calculator,
@@ -88,6 +92,7 @@ def init_optimizer_train_2prior(cfg, vae, dae, cond_enc=None):
         'dae_sn_calculator': dae_sn_calculator,
         'grad_scalar': grad_scalar
     }
+    return return_dict
 
 
 @torch.no_grad()

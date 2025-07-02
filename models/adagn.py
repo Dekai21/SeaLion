@@ -43,13 +43,14 @@ class AdaGN(nn.Module):
         return f"AdaGN(GN(8, {self.n_channel}), Linear({self.style_dim}, {self.out_dim}))" 
         
     def forward(self, image, style):
-        # style: B,D 
         # image: B,D,N,1 
+        # style: [B, D(128)] 
+        # return image
         CHECK2D(style)
-        style = self.emd(style)
+        style = self.emd(style) #[B, 128] -> [B, 64]
         if self.ndim == 3: #B,D,V,V,V
             CHECK5D(image)
-            style = style.view(style.shape[0], -1, 1, 1, 1) # 5D 
+            style = style.view(style.shape[0], -1, 1, 1, 1) # 5D, [B, D(64), 1, 1, 1]
         elif self.ndim == 2: # B,D,N,1 
             CHECK4D(image) 
             style = style.view(style.shape[0], -1, 1, 1) # 4D 
@@ -59,8 +60,8 @@ class AdaGN(nn.Module):
         else:
             raise NotImplementedError
 
-        factor, bias = style.chunk(2, 1)
-        result = self.norm(image)
+        factor, bias = style.chunk(2, 1)    # [B, 32, 1, 1, 1]*2
+        result = self.norm(image)   # [B, d(32), 32, 32, 32]
         result = result * factor + bias  
         return result 
 

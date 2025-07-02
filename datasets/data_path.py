@@ -17,6 +17,9 @@ def get_path(dataname=None):
     dataset_path['clip_forge_image'] = [
             './data/shapenet_render/'
             ]
+    # dataset_path['ShapeNetPart'] = ['./data/ShapeNetPart/']
+    dataset_path['PartNet'] = ["/data/dekai/PartNet/"]
+    dataset_path['ShapeNetPart'] = ["/data/dekai/ShapeNetPart/"]
 
     if dataname is None:
         return dataset_path

@@ -18,8 +18,10 @@ from einops import rearrange
 import torch.nn as nn
 import torch
 import numpy as np
-import third_party.pvcnn.functional as F
 from torch.cuda.amp import autocast, GradScaler, custom_fwd, custom_bwd 
+
+import third_party.pvcnn.functional as F
+from third_party.pvcnn.functional.sampling import gather
 
 class SE3d(nn.Module):
     def __init__(self, channel, reduction=8):
@@ -217,6 +219,8 @@ class PVConv(nn.Module):
         features = inputs[0] 
         coords_input = inputs[1]
         time_emb = inputs[2]
+        if len(inputs) > 3:
+            part_types = inputs[3]
         ## features, coords_input, time_emb = inputs
         if coords_input.shape[1] > 3:
             coords = coords_input[:,:3] # the last 3 dim are other point attributes if any  
@@ -244,6 +248,8 @@ class PVConv(nn.Module):
             fused_features = self.attn(fused_features)
         if time_emb is None:
             time_emb = {'voxel_features_4d': voxel_features_4d, 'resolution': self.resolution, 'training': self.training}  
+        if len(inputs) > 3:
+            return fused_features, coords_input, time_emb, part_types
         return fused_features, coords_input, time_emb #inputs[2]
 
 
@@ -327,7 +333,12 @@ class PointNetSAModule(nn.Module):
         if coords.shape[1] > 3:
             coords = coords[:,:3]
 
-        centers_coords = F.furthest_point_sample(coords, self.num_centers)
+        centers_coords, indices = F.furthest_point_sample(coords, self.num_centers, return_indices=True)
+        if len(inputs) > 3:
+            part_types = inputs[3]  # [B, 4, N]
+            assert part_types.shape[-1] == coords.shape[-1] == features.shape[-1]
+            part_types = gather(part_types, indices)
+
         # centers_coords: B,D,N
         S = centers_coords.shape[-1]
         time_emb = inputs[2] 
@@ -347,7 +358,10 @@ class PointNetSAModule(nn.Module):
         if len(features_list) > 1:
             return torch.cat(features_list, dim=1), centers_coords, time_emb
         else:
-            return features_list[0], centers_coords, time_emb
+            if len(inputs) > 3:
+                return torch.cat([features_list[0], part_types], dim=1), centers_coords, time_emb, part_types
+            else:
+                return features_list[0], centers_coords, time_emb
 
     def extra_repr(self):
         return f'num_centers={self.num_centers}, out_channels={self.out_channels}'
@@ -442,7 +456,8 @@ def create_pointnet2_sa_components(sa_blocks, extra_feature_channels,
         input_dim=3, 
         embed_dim=64, use_att=False, force_att=0,
         dropout=0.1, with_se=False, normalize=True, eps=0, has_temb=1,
-        width_multiplier=1, voxel_resolution_multiplier=1, verbose=True):
+        width_multiplier=1, voxel_resolution_multiplier=1, verbose=True,
+        part_type_channels=4, concat_part_type=False):
     """
     Returns: 
         in_channels: the last output channels of the sa blocks 
@@ -453,7 +468,7 @@ def create_pointnet2_sa_components(sa_blocks, extra_feature_channels,
     sa_layers, sa_in_channels = [], []
     c = 0
     num_centers = None
-    for conv_configs, sa_configs in sa_blocks:
+    for conv_configs, sa_configs in sa_blocks:  # e.g. [32, 2, 32], [1024, 0.1, 32, [32, 32]]
         k = 0
         sa_in_channels.append(in_channels)
         sa_blocks = []
@@ -499,6 +514,9 @@ def create_pointnet2_sa_components(sa_blocks, extra_feature_channels,
                 out_channels=out_channels,
                 include_coordinates=True))
             in_channels = extra_feature_channels = sa_blocks[-1].out_channels 
+            if concat_part_type:    # for diffusion u-net
+                in_channels += part_type_channels   # for the PVConv in next layer
+                extra_feature_channels += part_type_channels    # for the PointNetSAModule in next layer if there is no PVConv in next layer (deepest layer)
         c += 1
 
         if len(sa_blocks) == 1:
@@ -506,7 +524,7 @@ def create_pointnet2_sa_components(sa_blocks, extra_feature_channels,
         else:
             sa_layers.append(nn.Sequential(*sa_blocks))
 
-    return sa_layers, sa_in_channels, in_channels, 1 if num_centers is None else num_centers
+    return sa_layers, sa_in_channels, in_channels, 1 if num_centers is None else num_centers    # sa_layers: [[PVConv,PVConv,PointNetSAModule], [PVConv,PointNetSAModule]]
 
 
 def create_pointnet2_fp_modules(fp_blocks, in_channels, sa_in_channels, embed_dim=64, use_att=False,

@@ -59,11 +59,13 @@ def main(args, config):
 
     # -- check if prev saved ckpt exist -- #
     if os.path.exists(ckpt_dir) and os.path.exists(snapshot_file):
-        logger.info(
-            '[Detect saved snapshot at the checkpoint dir] resume from preemption!!! ')
         args.resume = True
-        args.pretrained = os.path.join(
-            config.save_dir, 'checkpoints', 'snapshot')
+        if len(config.sde.dae_checkpoint):
+            logger.info(f'[Detect saved checkpoint at: {config.sde.dae_checkpoint}] resume from preemption!!! ')
+            args.pretrained = config.sde.dae_checkpoint
+        else:
+            logger.info('[Detect saved snapshot at the checkpoint dir] resume from preemption!!! ')
+            args.pretrained = os.path.join(config.save_dir, 'checkpoints', 'snapshot')
     else:
         logger.info('not find any checkpoint: {}, (exist={}), or snapshot {}, (exist={})',
                     ckpt_dir, os.path.exists(ckpt_dir), snapshot_file, os.path.exists(snapshot_file))
@@ -105,8 +107,10 @@ def main(args, config):
 def get_args():
     parser = argparse.ArgumentParser('encoder decoder examiner')
     # experimental results
-    parser.add_argument('--exp_root', type=str, default='../exp',
+    parser.add_argument('--exp_root', type=str, default='/data/dekai/diffuse_seg/ShapeNetPart/',   # '/data/dekai/LION/PartNet/'
                         help='location of the results')
+    parser.add_argument('--exp_name', type=str, default='092501',
+                        help='name of the experiment')
     # parser.add_argument('--save', type=str, default='exp',
     #                     help='id used for storing intermediate results')
     # parser.add_argument('--recont_with_local_prior', type=bool, default=False,
@@ -178,7 +182,8 @@ def get_args():
     # Create log_name
     EXP_ROOT = args.exp_root  # os.environ.get('EXP_ROOT', '../exp/')
     if config.exp_name == '' or config.exp_name == 'none':
-        config.hash = io_helper.hash_str('%s' % config) + 'h'
+        # config.hash = io_helper.hash_str('%s' % config) + 'h'
+        config.hash = args.exp_name
         cfg_file_name = exp_helper.get_expname(config)
     else:
         cfg_file_name = config.exp_name
@@ -224,6 +229,7 @@ if __name__ == '__main__':
 
     if size > 1:
         args.distributed = True
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
         processes = []
         for rank in range(size):
             logger.info('In Rank={}', rank)
@@ -244,6 +250,7 @@ if __name__ == '__main__':
             p.join()
     else:
         # for debugging
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
         args.distributed = False
         args.global_size = 1
         utils.init_processes(0, size, main, args, config)

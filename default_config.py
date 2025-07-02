@@ -21,8 +21,9 @@ cfg.eval_trainnll = 0
 cfg.exp_name = ''
 cfg.cmt = ''
 cfg.hash = ''
+# cfg.hash = 102801
 cfg.ngpu = 1
-cfg.snapshot_min = 30  # snapshot every 30 min
+cfg.snapshot_min = 30  # 15 # snapshot every 30 min
 cfg.bash_name = ''
 cfg.set_detect_anomaly = 0
 cfg.weight_recont = 1.0
@@ -57,6 +58,10 @@ cfg.register_deprecated_key('latent_pts.encoder_nneighbor')
 cfg.register_deprecated_key('latent_pts.decoder_nneighbor')
 cfg.latent_pts.style_prior = 'models.score_sde.resnet.PriorSEDrop'
 cfg.latent_pts.mask_out_extra_latent = 0  # use only latent coordinates
+cfg.latent_pts.concat_part_type = False     # for VAE (point-level)
+cfg.latent_pts.concat_part_type_global_encoder = False  # for VAE (global-level)
+cfg.latent_pts.concat_part_type_ddpm = False
+cfg.latent_pts.pred_part_type = False
 # latent coordinates directly same as input (not using the decoder and encoder)
 cfg.register_deprecated_key('latent_pts.latent_as_pts')
 
@@ -260,7 +265,9 @@ cfg.data.type = "datasets.pointflow_datasets"
 cfg.data.dataset_type = "shapenet15k"
 cfg.data.num_workers = 12  # 8
 cfg.data.train_drop_last = 1  # drop_last for train data loader
+cfg.data.dataset = 'ShapeNet'
 cfg.data.cates = 'chair'  # data category
+cfg.data.num_parts = 4
 cfg.data.tr_max_sample_points = 2048
 cfg.data.te_max_sample_points = 2048
 cfg.data.data_dir = "data/ShapeNetCore.v2.PC15k"  # depreciated
@@ -274,6 +281,8 @@ cfg.data.normalize_global = False
 cfg.data.normalize_std_per_axis = False
 cfg.data.normalize_range = False  # not used
 cfg.data.recenter_per_shape = True
+cfg.data.random_rescale_per_axis = False
+cfg.data.random_rotate = False
 # -- for the normal prediction model, used in folder_datasets
 cfg.register_deprecated_key('data.load_point_stat')
 cfg.register_deprecated_key('data.is_load_pointflow2NS')

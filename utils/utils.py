@@ -24,7 +24,7 @@ from torch import optim
 import torch.distributed as dist
 from torch.cuda.amp import autocast, GradScaler
 USE_COMET = int(os.environ.get('USE_COMET', 1))
-USE_TFB = int(os.environ.get('USE_TFB', 0))
+USE_TFB = int(os.environ.get('USE_TFB', 1))
 USE_WB = int(os.environ.get('USE_WB', 0))
 print(f'utils/utils.py: USE_COMET={USE_COMET}, USE_WB={USE_WB}')
 

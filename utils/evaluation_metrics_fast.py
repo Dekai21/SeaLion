@@ -11,6 +11,7 @@ copied and modified from
 and 
     https://github.com/stevenygd/PointFlow/tree/b7a9216ffcd2af49b24078156924de025c4dbfb6/metrics
 """
+import os
 import torch
 import time
 from tabulate import tabulate
@@ -21,8 +22,8 @@ from scipy.stats import entropy
 from sklearn.neighbors import NearestNeighbors
 from numpy.linalg import norm
 from utils.exp_helper import ExpTimer
-from third_party.PyTorchEMD.emd_nograd import earth_mover_distance_nograd
-from third_party.PyTorchEMD.emd import earth_mover_distance
+# from third_party.PyTorchEMD.emd_nograd import earth_mover_distance_nograd
+# from third_party.PyTorchEMD.emd import earth_mover_distance
 from third_party.ChamferDistancePytorch.chamfer3D.dist_chamfer_3D import chamfer_3DDist_nograd, chamfer_3DDist
 from utils.checker import *
 import torch.nn.functional as F
@@ -168,17 +169,31 @@ def emd_approx(sample, ref, require_grad=True):
 
 
 # Borrow from https://github.com/ThibaultGROUEIX/AtlasNet
-def distChamfer(a, b):
+def distChamfer(a, b):  # a: [b, N, d], b: [b, M, d]
     x, y = a, b
     bs, num_points, points_dim = x.size()
-    xx = torch.bmm(x, x.transpose(2, 1))
-    yy = torch.bmm(y, y.transpose(2, 1))
-    zz = torch.bmm(x, y.transpose(2, 1))
+    xx = torch.bmm(x, x.transpose(2, 1))    # [b, N, N]
+    yy = torch.bmm(y, y.transpose(2, 1))    # [b, M, M]
+    zz = torch.bmm(x, y.transpose(2, 1))    # [b, N, M]
     diag_ind = torch.arange(0, num_points).to(a).long()
-    rx = xx[:, diag_ind, diag_ind].unsqueeze(1).expand_as(xx)
+    rx = xx[:, diag_ind, diag_ind].unsqueeze(1).expand_as(xx)   # [b, N] -> [b, 1, N] -> [b, N, N]
     ry = yy[:, diag_ind, diag_ind].unsqueeze(1).expand_as(yy)
-    P = (rx.transpose(2, 1) + ry - 2 * zz)
+    P = (rx.transpose(2, 1) + ry - 2 * zz)  # [b, N, N]
     return P.min(1)[0], P.min(2)[0]
+
+
+def distChamfer_2(a, b):  # a: [b, N, d], b: [b, M, d]
+    x, y = a, b
+    bs, num_points, points_dim = x.size()
+    xx = torch.bmm(x, x.transpose(2, 1))    # [b, N, N]
+    yy = torch.bmm(y, y.transpose(2, 1))    # [b, M, M]
+    zz = torch.bmm(x, y.transpose(2, 1))    # [b, N, M]
+    diag_ind = torch.arange(0, num_points).to(a).long()
+    diag_ind_2 = torch.arange(0, y.size()[1]).to(a).long()
+    rx = xx[:, diag_ind, diag_ind].unsqueeze(2).expand_as(zz)   # [b, N] -> [b, N, 1] -> [b, N, M]
+    ry = yy[:, diag_ind_2, diag_ind_2].unsqueeze(1).expand_as(zz)   # [b, N] -> [b, 1, N] -> [b, N, M]
+    P = (rx + ry - 2 * zz)  # [b, N, M]
+    return P.min(1)[0], P.min(2)[0] # [b, M], [b, N]
 
 
 def EMD_CD(sample_pcs,
@@ -201,27 +216,27 @@ def EMD_CD(sample_pcs,
         ref_batch = ref_pcs[b_start:b_end]
 
         if accelerated_cd and not require_grad:
-            dl, dr = distChamferCUDAnograd(sample_batch, ref_batch)
+            dl, dr = distChamferCUDAnograd(sample_batch, ref_batch) # [B, N], [B, N]
         elif accelerated_cd:
             dl, dr = distChamferCUDA(sample_batch, ref_batch)
         else:
             dl, dr = distChamfer(sample_batch, ref_batch)
         cd_lst.append(dl.mean(dim=1) + dr.mean(dim=1))
 
-        emd_batch = emd_approx(sample_batch, ref_batch,
-                               require_grad=require_grad)
-        emd_lst.append(emd_batch)
+        # emd_batch = emd_approx(sample_batch, ref_batch,
+        #                        require_grad=require_grad)
+        # emd_lst.append(emd_batch)
 
     if reduced:
         cd = torch.cat(cd_lst).mean()
-        emd = torch.cat(emd_lst).mean()
+        # emd = torch.cat(emd_lst).mean()
     else:
         cd = torch.cat(cd_lst)
-        emd = torch.cat(emd_lst)
+        # emd = torch.cat(emd_lst)
 
     results = {
-        'MMD-CD': cd,
-        'MMD-EMD': emd,
+        'MMD-CD': cd,   # [val]
+        # 'MMD-EMD': emd,   # [val]
     }
     return results
 
@@ -240,8 +255,10 @@ def formulate_results(results, dataset, hash, step, epoch):
         msg_head += 'reported '
         msg_oneline += f"{reported} "
 
-    msg_head += "MMD-CDx0.001\u2193 MMD-EMDx0.01\u2193 COV-CD%\u2191 COV-EMD%\u2191 1-NNA-CD%\u2193 1-NNA-EMD%\u2193 JSD\u2193"
-    msg_oneline += f"{results.get('lgan_mmd-CD', 0)*1000:.4f} {results.get('lgan_mmd-EMD', 0)*100:.4f} {results.get('lgan_cov-CD', 0)*100:.2f} {results.get('lgan_cov-EMD', 0)*100:.2f} {results.get('1-NN-CD-acc', 0)*100:.2f} {results.get('1-NN-EMD-acc', 0)*100:.2f} {results.get('jsd', 0):.2f}"
+    # msg_head += "MMD-CDx0.001\u2193 MMD-EMDx0.01\u2193 COV-CD%\u2191 COV-EMD%\u2191 1-NNA-CD%\u2193 1-NNA-EMD%\u2193 JSD\u2193"
+    # msg_oneline += f"{results.get('lgan_mmd-CD', 0)*1000:.4f} {results.get('lgan_mmd-EMD', 0)*100:.4f} {results.get('lgan_cov-CD', 0)*100:.2f} {results.get('lgan_cov-EMD', 0)*100:.2f} {results.get('1-NN-CD-acc', 0)*100:.2f} {results.get('1-NN-EMD-acc', 0)*100:.2f} {results.get('jsd', 0):.2f}"
+    msg_head += "MMD-CD-partx0.001\u2193 COV-CD-part%\u2191 1-NNA-CD-part%\u2193 JSD\u2193"
+    msg_oneline += f"{results.get('lgan_mmd-CD-part', 0)*1000:.4f} {results.get('lgan_cov-CD-part', 0)*100:.2f} {results.get('1-NN-CD-part-acc', 0)*100:.2f} {results.get('jsd', 0):.2f}"
     if results.get('url', None) is not None:
         msg_head += " url"
         msg_oneline += f" {results.get('url', '-')}"
@@ -269,9 +286,44 @@ def print_results(results, dataset='-', hash='-', step='', epoch=''):
     return msg
 
 
-def _pairwise_EMD_CD_sub(metric, sample_batch, ref_pcs, N_ref, batch_size, accelerated_cd, verbose, require_grad):
+def icp(points, points_ref, num_iterations=20):
+    for i in range(num_iterations):
+        # Compute pairwise distances between the points and the reference points
+        distances = torch.cdist(points, points_ref)
+
+        # Find the closest points in the reference points for each point
+        min_distances, indices = torch.min(distances, dim=1)
+
+        # Select the corresponding points in the reference points
+        closest_points = points_ref[indices]
+
+        # Compute the mean of the points and the closest points
+        mean_points = torch.mean(points, dim=0)
+        mean_closest_points = torch.mean(closest_points, dim=0)
+
+        # Subtract the means from the points and closest points
+        points_centered = points - mean_points
+        closest_points_centered = closest_points - mean_closest_points
+
+        # Compute the rotation matrix using singular value decomposition
+        H = points_centered.T @ closest_points_centered
+        U, S, V = torch.svd(H)
+        R = V @ U.T
+
+        # Compute the translation vector
+        t = mean_closest_points - R @ mean_points
+
+        # Apply the transformation to the points
+        points = R @ points.T + t.unsqueeze(-1)
+        points = points.T
+
+    return points
+
+
+def _pairwise_EMD_CD_sub(metric, sample_batch, ref_pcs, N_ref, batch_size, accelerated_cd, verbose, require_grad, rot=False):  # sample_batch: [N, 3+c], ref_pcs: [B, N, 3+c], return: [B]
     cd_lst = []
     emd_lst = []
+    cd_part_list = []
     sub_iterator = range(0, N_ref, batch_size)
     total_iter = int(N_ref / float(batch_size) + 0.5)
     # if verbose:
@@ -281,37 +333,72 @@ def _pairwise_EMD_CD_sub(metric, sample_batch, ref_pcs, N_ref, batch_size, accel
     iter_id = 0
     for ref_b_start in sub_iterator:
         ref_b_end = min(N_ref, ref_b_start + batch_size)
-        ref_batch = ref_pcs[ref_b_start:ref_b_end]
+        ref_batch = ref_pcs[ref_b_start:ref_b_end]  # [b, N, 3+c]
 
-        batch_size_ref = ref_batch.size(0)
-        point_dim = ref_batch.size(2)
-        sample_batch_exp = sample_batch.view(1, -1, point_dim).expand(
-            batch_size_ref, -1, -1)
+        # batch_size_ref = ref_batch.size(0)
+        # point_dim = ref_batch.size(2)
+        batch_size_ref, num_points, point_dim = ref_batch.shape
+        sample_batch_exp = sample_batch.view(1, num_points, -1).expand(
+            batch_size_ref, -1, -1) # [b, N, 3+c]
         sample_batch_exp = sample_batch_exp.contiguous()
         # print('before cuda {:.5f}s'.format(time.time() - t00))
         # t00 = time.time()
         if metric == 'CD':
+            sample_batch_exp = sample_batch_exp[..., :3].contiguous()
+            ref_batch = ref_batch[..., :3].contiguous()
             if accelerated_cd and not require_grad:
                 dl, dr = distChamferCUDAnograd(sample_batch_exp, ref_batch)
             elif accelerated_cd:
                 dl, dr = distChamferCUDA(sample_batch_exp, ref_batch)
             else:
-                dl, dr = distChamfer(sample_batch_exp, ref_batch)
+                dl, dr = distChamfer(sample_batch_exp, ref_batch)   # [B, M], [B, N]
             # print('cuda: {:.5f}'.format(time.time() - t00))
             #t00 = time.time()
             cd_lst.append(((dl.mean(dim=1) + dr.mean(dim=1)).view(1, -1))
                           )
         elif metric == 'EMD':
+            sample_batch_exp = sample_batch_exp[..., :3].contiguous()
+            ref_batch = ref_batch[..., :3].contiguous()
             emd_batch = emd_approx(
                 sample_batch_exp, ref_batch, require_grad=require_grad)
             emd_lst.append(emd_batch.view(1, -1))
+        elif metric == 'CD-part':
+            batch_cd_part = torch.zeros(batch_size_ref)
+            for i in range(batch_size_ref):
+                sample_part = sample_batch[:, 3:].sum(dim=0).bool()
+                ref_part = ref_batch[i, :, 3:].sum(dim=0).bool()
+                if not torch.equal(sample_part, ref_part):
+                    batch_cd_part[i] = torch.inf    # for two samples consisting of different parts, set the pairwise distance to inf
+                else:
+                    dl_list, dr_list = [], []
+                    sample_pcs = icp(sample_batch[:, :3], ref_batch[i][:, :3]) if rot else sample_batch[:, :3]
+                    for part_index in torch.where(sample_part==True)[0]:
+                        # print('part_index: ', part_index)
+                        sample_part_pcs = sample_pcs[torch.where(sample_batch[:, 3+part_index]==1)[0]][:, :3]
+                        ref_part_pcs = ref_batch[i][torch.where(ref_batch[i][:, 3+part_index]==1)[0]][:, :3]
+                        if len(sample_part_pcs) == 0 or len(ref_part_pcs) == 0:
+                            continue
+                        cdist = torch.cdist(sample_part_pcs, ref_part_pcs, p=2) ** 2
+                        dl_list.append(cdist.min(dim=1)[0])
+                        dr_list.append(cdist.min(dim=0)[0])
+                    if len(dl_list) == 0 or len(dr_list) == 0:  # for the case when the ref pcd and gen pcd have opposite part types
+                        batch_cd_part[i] = torch.inf
+                    else:
+                        dl = torch.cat(dl_list)
+                        dr = torch.cat(dr_list)
+                        # assert len(dl) == len(dr) == 2048
+                        batch_cd_part[i] = (dl.mean() + dr.mean())
+            cd_part_list.append(batch_cd_part.view(1, -1))
         else:
             raise NotImplementedError
         # torch.cuda.empty_cache()
         # print('approx: {:.5f}'.format(time.time() - t00))
     if metric == 'CD':
-        cd_lst = torch.cat(cd_lst, dim=1)
+        cd_lst = torch.cat(cd_lst, dim=1)   # [B]
         return cd_lst, cd_lst
+    elif metric == 'CD-part':
+        cd_part_list = torch.cat(cd_part_list, dim=1)
+        return cd_part_list, cd_part_list
     else:
         emd_lst = torch.cat(emd_lst, dim=1)
         return emd_lst, emd_lst
@@ -340,9 +427,9 @@ def _pairwise_EMD_CD_(metric,
             logger.info('done {:02.1f}%({}) eta={:.1f}m',
                         100.0*iter_id/total_iter, total_iter,
                         exp_timer.hours_left()*60)
-        sample_batch = sample_pcs[sample_b_start]
+        sample_batch = sample_pcs[sample_b_start]   # [N, 3+c]
         cd_lst, emd_lst = _pairwise_EMD_CD_sub(metric,
-                                               sample_batch, ref_pcs, N_ref, batch_size,
+                                               sample_batch, ref_pcs, N_ref, batch_size,    # sample_batch: [N, 3+c], ref_pcs: [B, N, 3+c]
                                                accelerated_cd, verbose, require_grad)
         all_cd.append(cd_lst)
         all_emd.append(emd_lst)
@@ -449,8 +536,10 @@ def lgan_mmd_cov(all_dist):
     N_sample, N_ref = all_dist.size(0), all_dist.size(1)
     min_val_fromsmp, min_idx = torch.min(all_dist, dim=1)
     min_val, _ = torch.min(all_dist, dim=0)
-    mmd = min_val.mean()
-    mmd_smp = min_val_fromsmp.mean()
+    # mmd = min_val.mean()
+    # mmd_smp = min_val_fromsmp.mean()
+    mmd = min_val[~torch.isinf(min_val)].mean()
+    mmd_smp = min_val_fromsmp[~torch.isinf(min_val_fromsmp)].mean()
     cov = float(min_idx.unique().view(-1).size(0)) / float(N_ref)
     cov = torch.tensor(cov).to(all_dist)
     return {
@@ -483,11 +572,11 @@ def compute_all_metrics(sample_pcs, ref_pcs, batch_size,
                                           batch_size,
                                           accelerated_cd=accelerated_cd,
                                           require_grad=False, verbose=v1)
-    M_rs_cd, M_rs_emd = _pairwise_EMD_CD_(metric, ref_pcs,
-                                          sample_pcs,
-                                          batch_size,
-                                          accelerated_cd=accelerated_cd,
-                                          require_grad=False, verbose=v1)
+    # M_rs_cd, M_rs_emd = _pairwise_EMD_CD_(metric, ref_pcs,
+    #                                       sample_pcs,
+    #                                       batch_size,
+    #                                       accelerated_cd=accelerated_cd,
+    #                                       require_grad=False, verbose=v1)
 
     res_cd = lgan_mmd_cov(M_rs_cd.t())
     results.update({'%s-%s' % (k, metric): v.item()

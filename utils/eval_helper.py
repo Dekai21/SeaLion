@@ -27,27 +27,32 @@ from utils.evaluation_metrics_fast import EMD_CD
 CD_ONLY = int(os.environ.get('CD_ONLY', 0))
 VIS = 1
 
-def pair_vis(gen_x, tr_x, titles, subtitles, writer, step=-1):
+def pair_vis(gen_x, tr_x, titles, subtitles, writer, step=-1, rgb=None):
     img_list = []
     num_recon = len(gen_x)
     for i in range(num_recon):
         points = gen_x[i]
         points = normalize_point_clouds([tr_x[i], points])
-        img = visualize_point_clouds_3d(points, subtitles[i])
+        img = visualize_point_clouds_3d(points, subtitles[i], rgb=[rgb[i]]*2)
         img_list.append(torch.as_tensor(img) / 255.0)
     grid = torchvision.utils.make_grid(img_list, nrow=num_recon//2)
     if writer is not None:
         writer.add_image(titles, grid, step)
 
-def compute_NLL_metric(gen_pcs, ref_pcs, device, writer=None, output_name='', batch_size=200, step=-1, tag=''):
+def compute_NLL_metric(gen_pcs, ref_pcs, device, writer=None, output_name='', batch_size=200, step=-1, tag='', rgb=None):
     # evaluate the reconstrution results
     metrics = EMD_CD(gen_pcs.to(device), ref_pcs.to(device),
                      batch_size=batch_size, accelerated_cd=True, reduced=False)
+                    #  batch_size=batch_size, accelerated_cd=False if int(os.environ['USE_SLURM']) else True, reduced=False)
     titles = 'nll/first-10-%s' % tag
-    k1, k2 = list(metrics.keys())
-    subtitles = [['ori', 'gen-%s=%.1fx1e-2;%s=%.1fx1e-2' %
-                  (k1, metrics[k1][j]*1e2, k2, metrics[k2][j]*1e2)] for j in range(10)]
-    pair_vis(gen_pcs[:10], ref_pcs[:10], titles, subtitles, writer, step=step)
+    # if int(os.environ['USE_SLURM']):
+    k1 = list(metrics.keys())[0]
+    subtitles = [['ori', 'gen-%s=%.1fx1e-2' % (k1, metrics[k1][j]*1e2)] for j in range(10)]
+    # else:
+    #     k1, k2 = list(metrics.keys())
+    #     subtitles = [['ori', 'gen-%s=%.1fx1e-2;%s=%.1fx1e-2' %
+    #                 (k1, metrics[k1][j]*1e2, k2, metrics[k2][j]*1e2)] for j in range(10)]
+    pair_vis(gen_pcs[:10], ref_pcs[:10], titles, subtitles, writer, step=step, rgb=rgb[:10])
     results = {}
 
     for k in metrics.keys():
@@ -57,7 +62,7 @@ def compute_NLL_metric(gen_pcs, ref_pcs, device, writer=None, output_name='', ba
         subtitles = [['ori', 'gen-%s=%.2fx1e-2' %
                       (k, worse_score[j]*1e2)] for j in range(len(worse_score))]
         pair_vis(gen_pcs[worse_ten], ref_pcs[worse_ten],
-                 titles, subtitles, writer, step=step)
+                 titles, subtitles, writer, step=step, rgb=rgb[worse_ten])
         if 'score_detail' not in results:
             results['score_detail'] = metrics[k]
         metrics[k] = metrics[k].mean()
@@ -251,9 +256,9 @@ def compute_score(output_name, ref_name, batch_size_test=256, device_str='cuda',
     s_pcs = s_pcs[:N_ref]
     ref_pcs = ref_pcs[:N_ref]
     gen_pcs = gen_pcs[:N_ref]
-    if gen_pcs.shape[2] == 6:  # B,N,3 or 6
-        gen_pcs = gen_pcs[:, :, :3]
-        ref_pcs = ref_pcs[:, :, :3]
+    # if gen_pcs.shape[2] == 6:  # B,N,3 or 6
+    #     gen_pcs = gen_pcs[:, :, :3]
+    #     ref_pcs = ref_pcs[:, :, :3]
     if norm_box:
         #ref_pcs = ref_pcs * s_pcs + m_pcs
         #gen_pcs = gen_pcs * s_pcs + m_pcs
@@ -339,3 +344,143 @@ def compute_score(output_name, ref_name, batch_size_test=256, device_str='cuda',
         exit()
     return results
 
+
+def rescale_per_shape(pcs):
+    pcd = pcs[:, :, :3] # [B, N, 3]
+    pcd_max = pcd.max(dim=1, keepdim=True)[0]
+    pcd_min = pcd.min(dim=1, keepdim=True)[0]
+    pcd_shift = (pcd_max + pcd_min) / 2
+    pcd_scale = (pcd_max - pcd_min).max(-1, keepdim=True)[0] / 2
+    pcd = (pcd - pcd_shift) / pcd_scale
+    pcs[:, :, :3] = pcd
+    return pcs
+
+
+def compute_score_2(output_name, ref_pcs, batch_size_test=256, device_str='cuda',
+                  device=None, accelerated_cd=True, writer=None,
+                  exp=None,
+                  norm_box=False, skip_write=False, **print_kwargs):
+    """
+    Args: 
+        output_name (str) path to sample obj: tensor: (Nsample.Npoint.3or6)
+        ref_name (str) path to torch obj: 
+            torch.save({'ref': ref_pcs, 'mean': m_pcs, 'std': s_pcs}, ref_name)
+        print_kwargs (dict): entries: dataset, hash, step, epoch; 
+    """
+    # logger.info('[compute sample metric] sample: {} and ref: {}',
+    #             output_name, ref_name)
+    # ref = torch.load(ref_name)
+    # ref_pcs = ref['ref'][:, :, :3]
+    # m_pcs, s_pcs = ref['mean'], ref['std']
+    m_pcs, s_pcs = torch.ones(ref_pcs.shape[0]), torch.ones(ref_pcs.shape[0])
+    gen_pcs = torch.load(output_name)
+    ref_pcs = rescale_per_shape(ref_pcs)
+    gen_pcs = rescale_per_shape(gen_pcs)
+    if gen_pcs.shape[1] > ref_pcs.shape[1]:
+        xperm = np.random.permutation(np.arange(gen_pcs.shape[1]))[
+            :ref_pcs.shape[1]]
+        gen_pcs = gen_pcs[:, xperm]
+    if type(gen_pcs) is dict:
+        logger.info('WARNING: the gen_pcs is a dict, with key '
+                    'as {}| usuaglly its a tensor '
+                    'you perhaps takes the train data,',
+                    gen_pcs.keys())
+        gen_pcs = gen_pcs['ref']
+    device = torch.device(device_str) if device is None else device
+    # batch_size_test = ref_pcs.shape[0]
+    logger.info('[data shape] ref_pcs: {}, gen_pcs: {}, mean={}, std={}; norm_box={}',
+                ref_pcs.shape, gen_pcs.shape, m_pcs.shape, s_pcs.shape, norm_box)
+    N_ref = ref_pcs.shape[0]  # subset it
+    m_pcs = m_pcs[:N_ref]
+    s_pcs = s_pcs[:N_ref]
+    ref_pcs = ref_pcs[:N_ref]
+    gen_pcs = gen_pcs[:N_ref]
+    # if gen_pcs.shape[2] == 6:  # B,N,3 or 6
+    #     gen_pcs = gen_pcs[:, :, :3]
+    #     ref_pcs = ref_pcs[:, :, :3]
+    # if norm_box:
+    #     #ref_pcs = ref_pcs * s_pcs + m_pcs
+    #     #gen_pcs = gen_pcs * s_pcs + m_pcs
+    #     ref_pcs = 0.5 * torch.stack(normalize_point_clouds(ref_pcs), dim=0)
+    #     gen_pcs = 0.5 * torch.stack(normalize_point_clouds(gen_pcs), dim=0)
+    #     print_kwargs['dataset'] = print_kwargs.get('dataset',
+    #                                                '')+'-normbox'
+    # else:
+    #     ref_pcs = ref_pcs * s_pcs + m_pcs
+    #     gen_pcs = gen_pcs * s_pcs + m_pcs
+    # visualize first few samples:
+    vis = 0
+    if vis:
+        if exp is not None:
+            exp = exp
+        elif writer is not None:
+            exp = writer.exp
+        elif os.path.exists('.comet_api'):
+            comet_args = json.load(open('.comet_api', 'r'))
+            exp = Experiment(display_summary_level=0,
+                            **comet_args)
+        else:
+            exp = OfflineExperiment(offline_directory="/tmp")
+        img_list = []
+        gen_list = []
+        ref_list = []
+        for i in range(20):
+            NORM_VIS = 0
+            if NORM_VIS:
+                norm_ref, norm_gen = normalize_point_clouds([
+                    ref_pcs[i], gen_pcs[i]])
+            else:
+                norm_ref = ref_pcs[i]
+                norm_gen = gen_pcs[i]
+            ref_img = visualize_point_clouds_3d([norm_ref],
+                                                [f'ref-{i}'], bound=1.0)  # 0.8)
+            gen_img = visualize_point_clouds_3d([norm_gen],
+                                                [f'gen-{i}'], bound=1.0)  # 0.8)
+            ref_list.append(torch.as_tensor(ref_img) / 255.0)
+            gen_list.append(torch.as_tensor(gen_img) / 255.0)
+            img_list.append(ref_list[-1])
+            img_list.append(gen_list[-1])
+
+        path = output_name.replace('.pt', '_eval.png')
+
+        grid = torchvision.utils.make_grid(gen_list)
+        # to 3,H,W to H,W,3
+        ndarr = grid.mul(255).add_(0.5).clamp_(0, 255).permute(
+            1, 2, 0).to('cpu', torch.uint8).numpy()
+        exp.log_image(ndarr, 'samples')
+
+        ref_grid = torchvision.utils.make_grid(ref_list)
+        # to 3,H,W to H,W,3
+        ref_ndarr = ref_grid.mul(255).add_(0.5).clamp_(0, 255).permute(
+            1, 2, 0).to('cpu', torch.uint8).numpy()
+        ndarr = np.concatenate([ndarr, ref_ndarr], axis=0)
+        exp.log_image(ndarr, 'samples_vs_ref')
+
+        torchvision.utils.save_image(img_list, path)
+        logger.info(exp.url)
+        logger.info('save vis at {}', path)
+    metric2 = 'EMD' if not CD_ONLY else None
+    logger.info('print_kwargs: {}', print_kwargs)
+    results = compute_all_metrics(gen_pcs.to(device).float(),
+                                  ref_pcs.to(device).float(), batch_size_test, accelerated_cd=False, metric1='CD-part', metric2=None,
+                                #   ref_pcs.to(device).float(), batch_size_test, accelerated_cd=True, metric1='CD', metric2=None,
+                                  **print_kwargs)
+
+    # jsd = jsd_between_point_cloud_sets(
+    #     gen_pcs.cpu().numpy(), ref_pcs.cpu().numpy())
+    # results['jsd'] = jsd
+    # msg = print_results(results, **print_kwargs)
+    # with open('../exp/eval_out.txt', 'a') as f:
+    #     run_time = time.strftime('%m%d-%H%M-%S')
+    #     f.write('<< date: %s >>\n' % run_time)
+    #     f.write('%s\n%s\n' % (exp.url, msg))
+    # results['url'] = exp.url
+    if not skip_write:
+        os.makedirs('results', exist_ok=True)
+        msg = write_results(
+            os.path.join('./results/', 'eval_out.csv'),
+            results, **print_kwargs)
+    # if metric2 is None:
+    #     logger.info('early exit')
+    #     exit()
+    return results

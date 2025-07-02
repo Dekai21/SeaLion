@@ -38,18 +38,19 @@ def plot_points(output, output_name=None):
     # print(f'INFO save output img as {output_name}')
     return output_name
 
-def visualize_point_clouds_3d_list(pcl_lst, title_lst, vis_order, vis_2D, bound, S):
+def visualize_point_clouds_3d_list(pcl_lst, title_lst, vis_order, vis_2D, bound, S, rgb_list=None):
     t_list = []
     for i in range(len(pcl_lst)):
+        rgb = None if rgb_list is None else rgb_list[i]
         img = visualize_point_clouds_3d([pcl_lst[i]], [title_lst[i]] if title_lst is not None else None,
-                                        vis_order, vis_2D, bound, S)
+                                        vis_order, vis_2D, bound, S, rgb)
         t_list.append(img)
     img = np.concatenate(t_list, axis=2)
     return img
 
 
 def visualize_point_clouds_3d(pcl_lst, title_lst=None,
-                              vis_order=[2, 0, 1], vis_2D=1, bound=1.5, S=3, rgba=0):
+                              vis_order=[2, 0, 1], vis_2D=1, bound=1.5, S=3, rgb=0):
     """
     Copied and modified from https://github.com/stevenygd/PointFlow/blob/b7a9216ffcd2af49b24078156924de025c4dbfb6/utils.py#L109 
 
@@ -62,7 +63,7 @@ def visualize_point_clouds_3d(pcl_lst, title_lst=None,
     assert(type(pcl_lst) == list and torch.is_tensor(pcl_lst[0])
            ), f'expect list of tensor, get {type(pcl_lst)} and {type(pcl_lst[0])}'
     if len(pcl_lst) > 1:
-        return visualize_point_clouds_3d_list(pcl_lst, title_lst, vis_order, vis_2D, bound, S)
+        return visualize_point_clouds_3d_list(pcl_lst, title_lst, vis_order, vis_2D, bound, S, rgb)
 
     pcl_lst = [pcl.cpu().detach().numpy() for pcl in pcl_lst]
     if title_lst is None:
@@ -75,7 +76,7 @@ def visualize_point_clouds_3d(pcl_lst, title_lst=None,
     for idx, (pts, title) in enumerate(zip(pcl_lst, title_lst)):
         ax1 = fig.add_subplot(1, num_col, 1 + idx, projection='3d')
         ax1.set_title(title)
-        rgb = None
+        # rgb = None
         if type(S) is list:
             psize = S[idx]
         else:
@@ -92,18 +93,18 @@ def visualize_point_clouds_3d(pcl_lst, title_lst=None,
     res = fig2data(fig)
     res = np.transpose(res, (2, 0, 1))  # 3,H,W
 
-    plt.close()
+    plt.close() # plt.savefig(f'./imgs/{title_lst[0]}.png'); plt.savefig(f"./imgs/{title_lst[0].split('/')[-1]}.png")
 
     if vis_2D:
         v1 = 0.5
-        v2 = 0
+        v2 = 0 # car: -90
         fig = plt.figure(figsize=(3 * len(pcl_lst), 3))
         num_col = len(pcl_lst)
         assert(num_col == len(title_lst)
                ), f'require same len, get {num_col} and {len(title_lst)}'
         for idx, (pts, title) in enumerate(zip(pcl_lst, title_lst)):
             ax1 = fig.add_subplot(1, num_col, 1 + idx, projection='3d')
-            rgb = None
+            # rgb = None
             if type(S) is list:
                 psize = S[idx]
             else:
@@ -147,3 +148,21 @@ def fig2data(fig):
     # canvas.tostring_argb give pixmap in ARGB mode. Roll the ALPHA channel to have it in RGBA mode
     buf = np.roll(buf, 3, axis=2)
     return buf
+
+
+def part2color(part_types: torch.Tensor)->np.ndarray:
+    """
+    Args:
+        - part_types: [B, N, parts]
+    Return:
+        - rgb: [B, N]
+    """
+    part_types = part_types.cpu()
+    B, N, num_parts = part_types.shape
+    # color_list = np.array(['C0', 'tab:orange', 'tab:red', 'tab:green', 'tab:blue', 'tab:gray', 'tab:purple', '#9ACD32', 'tab:brown', 'tab:pink'])   # [#9ACD32: yellowgreen]
+    color_list = np.array(['C0', 'orange', 'red', 'green', 'blue', 'gray', 'purple', 'yellowgreen', 'brown', 'pink', 'forestgreen', 'black', 'cadetblue', 'cyan', 'skyblue', 'maroon'])
+    _max, _max_indices = part_types.max(dim=-1)
+    mask = _max > 0
+    _max_indices[mask] += 1 # [B, N]
+    rgb = color_list[_max_indices]
+    return rgb

@@ -6,37 +6,44 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 """ to train hierarchical VAE model with single prior """
-import os
-import time
-from PIL import Image
-import gc
-import psutil
 import functools
-import torch
-import torch.nn.functional as F
-import torch.nn as nn
-import torchvision
-import numpy as np
-from loguru import logger
-import torch.distributed as dist
-from torch import optim
-from trainers.base_trainer import BaseTrainer
-from utils.ema import EMA
-from utils.model_helper import import_model, loss_fn
-from utils.vis_helper import visualize_point_clouds_3d
-from utils.eval_helper import compute_NLL_metric 
-from utils import model_helper, exp_helper, data_helper
-from utils.data_helper import normalize_point_clouds
-from utils.diffusion_pvd import DiffusionDiscretized
-from utils.diffusion_continuous import make_diffusion, DiffusionBase
-from utils.checker import *
-from utils import utils
-from matplotlib import pyplot as plt
-import third_party.pvcnn.functional as pvcnn_fn
+import gc
+import math
+import os
+import pickle
+import time
 from timeit import default_timer as timer
+
+import numpy as np
+import psutil
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
+from loguru import logger
+from matplotlib import pyplot as plt
+from PIL import Image
+from scipy.spatial.transform import Rotation as R
+from torch import optim
+from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Adam as FusedAdam
-from torch.cuda.amp import autocast, GradScaler
+from tqdm import tqdm
+
+
+import third_party.pvcnn.functional as pvcnn_fn
 from trainers import common_fun_prior_train
+from trainers.base_trainer import BaseTrainer
+from utils import data_helper, exp_helper, model_helper, utils
+from utils.checker import *
+from utils.data_helper import normalize_point_clouds
+from utils.diffusion_continuous import DiffusionBase, make_diffusion
+from utils.diffusion_pvd import DiffusionDiscretized
+from utils.ema import EMA
+from utils.eval_helper import compute_NLL_metric
+from utils.model_helper import import_model, loss_fn
+from utils.vis_helper import part2color, visualize_point_clouds_3d, fig2data
+import matplotlib.pyplot as plt
 
 
 @torch.no_grad()
@@ -92,6 +99,37 @@ def generate_samples_vada(shape, dae, diffusion, vae, num_samples,
     return image, nfe_torch, time_ode_solve_torch, sampling_time_torch, output
 
 
+def save_pcd(output: dict, part_types, model_ids, normals):
+    # origin_pcd = output['x_0'].cpu().numpy()  # [B, N, 3]
+    # pred_pcd = output['x_0_pred'].cpu().numpy()   # [B, N, 3]
+    # # dd_pcd = output['dd_recont'].cpu().numpy()
+    # part_types = part_types.cpu().numpy()
+    # normals = normals.cpu().numpy()
+    # reconstruct = {'origin_pcd': origin_pcd, 'pred_pcd': pred_pcd, 'part_types': part_types, 'model_ids': model_ids, \
+    #                'normals': normals, 'diffuse_step_combinations': output['diffuse_step_combinations']}
+    # for index, diffusion_step in enumerate(output['diffuse_step_combinations']):
+    #     reconstruct[f"dd_pcd_{str(diffusion_step[0]).zfill(3)}_{str(diffusion_step[1]).zfill(3)}"] = output['dd_recont'][index].cpu().numpy()
+    # with open('tmp/reconstruct.pt', 'wb') as fp:
+    #     pickle.dump(reconstruct, fp)
+    
+    origin_pcd = output['x_0']  # [B, N, 3]
+    # pred_pcd = output['x_0_pred'].cpu().numpy()   # [B, N, 3]
+    # dd_pcd = output['dd_recont'].cpu().numpy()
+    part_types = part_types.cpu().numpy()
+    # normals = normals.cpu().numpy()
+    reconstruct = {'origin_pcd': origin_pcd, 'part_types': part_types, 'model_ids': model_ids, \
+                   'diffuse_step_combinations': output['diffuse_step_combinations']}
+    for index, diffusion_step in enumerate(output['diffuse_step_combinations']):
+        reconstruct[f"dd_pcd_{str(diffusion_step[0]).zfill(3)}_{str(diffusion_step[1]).zfill(3)}"] = output['dd_recont'][index]
+        if 'dd_updated_part_types' in output:
+            reconstruct[f"dd_updated_part_types_{str(diffusion_step[0]).zfill(3)}_{str(diffusion_step[1]).zfill(3)}"] = output['dd_updated_part_types'][index]
+    folder = "gda/shapenet"
+    os.makedirs(folder, exist_ok=True)
+    with open(f'{folder}/dd_052601_airplane_0_010_900_091501_body.pt', 'wb') as fp:  # e.g. dd_122501_car_593_010_300_122701_rot_pseudo.pt
+        pickle.dump(reconstruct, fp)
+    quit()
+
+
 @torch.no_grad()
 def validate_inspect(latent_shape,
                      model, dae, diffusion, ode_sample,
@@ -105,7 +143,9 @@ def validate_inspect(latent_shape,
                      test_loader=None,  # can be None
                      has_shapelatent=False, vis_latent_point=False,
                      ddim_step=0, epoch=0, fun_generate_samples_vada=None, clip_feat=None,
-                     cls_emb=None, cfg={}):
+                     cls_emb=None, 
+                     part_types=None, model_ids=None, normals=None,
+                     cfg={}):
     """ visualize the samples, and recont if needed 
     Args:
        has_shapelatent (bool): True when the model has shape latent  
@@ -122,13 +162,15 @@ def validate_inspect(latent_shape,
     num_recon_train = num_recon if need_train else 0
     kwargs = {}
     assert(need_sample >= 0 and need_val > 0 and need_train == 0)
+
     if need_sample:
         # gen_x: B,N,3
         gen_x, nstep, ode_time, sample_time, output_dict = \
             fun_generate_samples_vada(latent_shape, dae, diffusion,
-                                      model, w_prior.shape[0], enable_autocast=autocast_train,
-                                      ode_sample=ode_sample, ddim_step=ddim_step, clip_feat=clip_feat,
-                                      **kwargs)
+                                    model, w_prior.shape[0], enable_autocast=autocast_train,
+                                    ode_sample=ode_sample, ddim_step=ddim_step, clip_feat=clip_feat,
+                                    part_types=part_types,
+                                    **kwargs) # gen_x: [B, N, 3]
         logger.info('cast={}, sample step={}, ode_time={}, sample_time={}',
                     autocast_train,
                     nstep if ddim_step == 0 else ddim_step,
@@ -139,13 +181,18 @@ def validate_inspect(latent_shape,
     vis_order = cfg.viz.viz_order
     vis_args = {'vis_order': vis_order,
                 }
+    if cfg.latent_pts.pred_part_type:
+        part_types_pred = output_dict['eps_list']['pred_types']
+        rgb = part2color(part_types_pred)
+    else:
+        rgb = part2color(part_types)
     # vis the samples
     if not vis_latent_point and num_samples > 0:
         img_list = []
         for i in range(num_samples):
             points = gen_x[i]  # N,3
             points = normalize_point_clouds([points])[0]
-            img = visualize_point_clouds_3d([points], **vis_args)
+            img = visualize_point_clouds_3d([points], rgb=rgb[i], **vis_args)
             img_list.append(img)
         img = np.concatenate(img_list, axis=2)
         writer.add_image('sample', torch.as_tensor(img), it)
@@ -155,39 +202,43 @@ def validate_inspect(latent_shape,
         img_list = []
         eps_list = []
         eps = output_dict['sampled_eps'].view(
-            num_samples, dae.num_points, dae.num_classes)[:, :, :3]
+            num_samples, dae.num_points, dae.num_classes)[:, :, :3] # [B, N, 3]
         for i in range(num_samples):
             points = gen_x[i]
-            points = normalize_point_clouds([points])[0]
-            img = visualize_point_clouds_3d([points], **vis_args)
+            points = normalize_point_clouds([points])[0]    # [N, 3] -> [N, 3]
+            img = visualize_point_clouds_3d([points], rgb=rgb[i], **vis_args)
             img_list.append(img)
 
             points = eps[i]
             points = normalize_point_clouds([points])[0]
-            img = visualize_point_clouds_3d([points], **vis_args)
+            img = visualize_point_clouds_3d([points], rgb=rgb[i], **vis_args)
             eps_list.append(img)
         img = np.concatenate(img_list, axis=2)
         img_eps = np.concatenate(eps_list, axis=2)
         img = np.concatenate([img, img_eps], axis=1)
         writer.add_image('sample', torch.as_tensor(img), it)
+
+    # recont
     logger.info('call recont')
-    inputs = val_input if val_input is not None else val_x
-    output = model.recont(inputs) if cls_emb is None else model.recont(
-        inputs, cls_emb=cls_emb)
-    gen_x = output['final_pred']
+    inputs = val_input if val_input is not None else val_x  # [B, N, 3]
+    kwargs = {'part_types': part_types} if part_types is not None else {}
+    output = model.recont(inputs, **kwargs) if cls_emb is None else model.recont(
+        inputs, cls_emb=cls_emb, **kwargs)    # use VAE to reconstruct the point cloud.
+    gen_x = output['final_pred']    # [B, N, 3]
 
     # vis the recont
+    rgb = part2color(part_types)
     if num_recon_val > 0:
         img_list = []
         for i in range(num_recon_val):
             points = gen_x[i]
             points = normalize_point_clouds([points])
-            img = visualize_point_clouds_3d(points, ['rec#%d' % i], **vis_args)
+            img = visualize_point_clouds_3d(points, ['rec#%d' % i], rgb=rgb[i], **vis_args)
             img_list.append(img)
         gt_list = []
         for i in range(num_recon_val):
             points = normalize_point_clouds([val_x[i]])
-            img = visualize_point_clouds_3d(points, ['gt#%d' % i], **vis_args)
+            img = visualize_point_clouds_3d(points, ['gt#%d' % i], rgb=rgb[i], **vis_args)
             gt_list.append(img)
         img = np.concatenate(img_list, axis=2)
         gt = np.concatenate(gt_list, axis=2)
@@ -200,7 +251,7 @@ def validate_inspect(latent_shape,
                 points = output['vis/latent_pts'][i, :, :3]
                 points = normalize_point_clouds([points])
                 input_img = visualize_point_clouds_3d(
-                    points, ['input#%d' % i], **vis_args)
+                    points, ['input#%d' % i], rgb=rgb[i], **vis_args)
                 input_list.append(input_img)
             input_list = np.concatenate(input_list, axis=2)
             img = np.concatenate([img, input_list], axis=1)
@@ -211,7 +262,7 @@ def validate_inspect(latent_shape,
         for i in range(num_recon_train):
             points = gen_x[num_recon_val + i]
             points = normalize_point_clouds([tr_x[i], points])
-            img = visualize_point_clouds_3d(points, ['ori', 'rec'], **vis_args)
+            img = visualize_point_clouds_3d(points, ['ori', 'rec'], rgb=[rgb[i]]*2, **vis_args)
             img_list.append(img)
         img = np.concatenate(img_list, axis=2)
         writer.add_image('train/recont', torch.as_tensor(img), it)
@@ -248,7 +299,7 @@ class Trainer(BaseTrainer):
             # if has pretrained ckpt, we dont need to load the vae ckpt anymore
             logger.info('Load vae_checkpoint: {}', self.cfg.sde.vae_checkpoint)
             vae_ckpt = torch.load(self.cfg.sde.vae_checkpoint)
-            vae_weight = vae_ckpt['model']
+            vae_weight = vae_ckpt['model']  # includes 'style_encoder', 'encoder', 'decoder'
             self.model.load_state_dict(vae_weight)
 
         if self.cfg.shapelatent.model == 'models.hvae_ddpm':
@@ -610,6 +661,23 @@ class Trainer(BaseTrainer):
         if self.cfg.clipforge.enable:
             assert(self.clip_feat_test is not None)
         kwargs = {}
+
+        if self.cfg.latent_pts.pred_part_type:
+            mIOU_dict = {t:value.avg for t, value in self.mIOU_list.items()}
+            mIOU_dict = dict(sorted(mIOU_dict.items()))
+            # for visualize the mIoU curve during the denoising process.
+            # with open("mIOU_dict.pkl", "wb") as f:
+            #     pickle.dump(mIOU_dict, f)
+            # return None
+            fig, ax = plt.subplots()
+            ax.plot(list(mIOU_dict.keys()), list(mIOU_dict.values()))
+            fig.canvas.draw()
+            img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+            img = np.transpose(img, (2, 0, 1))  # 3,H,W
+            writer.add_image('mIOU - diffusion step', torch.as_tensor(img), step)
+            plt.close()
+
         output = validate_inspect(shape, self.model, self.dae,
                                   diffusion, ode_sample,
                                   step, self.writer, self.sample_num_points,
@@ -620,15 +688,18 @@ class Trainer(BaseTrainer):
                                   num_samples=self.num_val_samples,
                                   test_loader=self.test_loader,
                                   w_prior=self.w_prior,
-                                  val_x=self.val_x, tr_x=self.tr_x,
+                                  val_x=self.val_x, tr_x=self.tr_x, # val_x == val_input != tr_x, the former two are from the test set, tr_x is from the training set, and these 3 were prepared in prepare_vis_data.
                                   val_input=self.val_input,
-                                  m_pcs=self.m_pcs, s_pcs=self.s_pcs,
+                                  m_pcs=self.m_pcs, s_pcs=self.s_pcs,   # [B, 1, 3], [B, 1, 1], mean of 3 axis, and rescale ratio based on std.
                                   has_shapelatent=True,
                                   vis_latent_point=self.cfg.vis_latent_point,
                                   ddim_step=self.cfg.viz.vis_sample_ddim_step,
                                   clip_feat=self.clip_feat_test,
                                   cfg=self.cfg,
                                   fun_generate_samples_vada=self.fun_generate_samples_vada,
+                                  part_types=self.part_types,
+                                  model_ids=self.model_ids,
+                                  normals=self.normals,
                                   **kwargs
                                   )
         if writer is not None:
@@ -644,7 +715,7 @@ class Trainer(BaseTrainer):
 
     @torch.no_grad()
     def sample(self, num_shapes=2, num_points=2048, device_str='cuda',
-               for_vis=True, use_ddim=False, save_file=None, ddim_step=0, clip_feat=None):
+               for_vis=True, use_ddim=False, save_file=None, ddim_step=0, clip_feat=None, part_types=None):
         """ return the final samples in shape [B,3,N] """
         # switch to EMA parameters
         assert(
@@ -658,7 +729,7 @@ class Trainer(BaseTrainer):
         S = self.num_steps
         logger.info('num_shapes={}, num_points={}, use_ddim={}, Nstep={}',
                     num_shapes, num_points, use_ddim, S)
-        latent_shape = self.model.latent_shape()
+        latent_shape = self.model.latent_shape()    # [[z, 1, 1], [N*4, 1, 1]]
 
         ode_sample = self.cfg.sde.ode_sample
         ## diffusion = self.diffusion_cont if ode_sample else self.diffusion_disc
@@ -677,13 +748,17 @@ class Trainer(BaseTrainer):
                                            ode_sample=ode_sample,
                                            need_denoise=self.cfg.eval.need_denoise,
                                            ddim_step=ddim_step,
-                                           clip_feat=clip_feat)
+                                           clip_feat=clip_feat,
+                                           part_types=part_types)
         # gen_x: BNC
         CHECKEQ(gen_x.shape[2], self.cfg.ddpm.input_dim)
         if gen_x.shape[1] > self.sample_num_points:
             gen_x = pvcnn_fn.furthest_point_sample(gen_x.permute(0, 2, 1).contiguous(),
                                                    self.sample_num_points).permute(0, 2, 1).contiguous()  # [B,C,npoint]
 
+        if self.cfg.latent_pts.pred_part_type:
+            pred_types = output_fsample['eps_list']['pred_types']
+            gen_x = torch.cat([gen_x, pred_types], dim=2)
         traj = gen_x.permute(0, 2, 1).contiguous()  # BN3->B3N
 
         # ---- debug perpuse ---- #

@@ -21,16 +21,18 @@ class Model(nn.Module):
         self.num_total_iter = 0
         self.args = args
         self.input_dim = args.ddpm.input_dim 
-        latent_dim = args.shapelatent.latent_dim
+        latent_dim = args.shapelatent.latent_dim    # DEKAI: latent dim is 1
         self.latent_dim = latent_dim
         self.kl_weight = args.shapelatent.kl_weight
         
         self.num_points = args.data.tr_max_sample_points
         # ---- global ---- #
         # build encoder  
+        part_type_channels = args.data.num_parts
         self.style_encoder = import_model(args.latent_pts.style_encoder)(
             zdim=args.latent_pts.style_dim, 
             input_dim=self.input_dim, 
+            extra_feature_channels = part_type_channels,
             args=args)
         if len(args.latent_pts.style_mlp):
             self.style_mlp = import_model(args.latent_pts.style_mlp)(args) 
@@ -53,7 +55,7 @@ class Model(nn.Module):
             args.shapelatent.decoder_type)
 
     @torch.no_grad()
-    def encode(self, x, class_label=None):
+    def encode(self, x, class_label=None, **kwargs):
         batch_size, _, point_dim = x.size()
         assert(x.shape[2] == self.input_dim), f'expect input in ' \
             f'[B,Npoint,PointDim={self.input_dim}], get: {x.shape}'
@@ -69,35 +71,35 @@ class Model(nn.Module):
             enc_input = x 
 
         # ---- global style encoder ---- #
-        z = self.style_encoder(enc_input) 
-        z_mu, z_sigma = z['mu_1d'], z['sigma_1d'] # log_sigma
+        z = self.style_encoder(enc_input, **kwargs)   # [B, Npoint, 3] -> [B, D(128)], [B, D(128)]
+        z_mu, z_sigma = z['mu_1d'], z['sigma_1d'] # log_sigma   # [B, D(128)], [B, D]
         dist = Normal(mu=z_mu, log_sigma=z_sigma)  # (B, F)
-        z_global = dist.sample()[0] 
+        z_global = dist.sample()[0]     # [B, D]
         all_eps.append(z_global) 
-        all_log_q.append(dist.log_p(z_global)) 
+        all_log_q.append(dist.log_p(z_global)) # [B, D]
         latent_list.append( [z_global, z_mu, z_sigma] )
 
         # ---- original encoder ---- #
         style = z_global  # torch.cat([z_global, cls_emb], dim=1) if self.args.data.cond_on_cat else z_global 
-        style = self.style_mlp(style) if self.style_mlp is not None else style  
-        z = self.encoder([x, style])
-        z_mu, z_sigma = z['mu_1d'], z['sigma_1d']
+        style = self.style_mlp(style) if self.style_mlp is not None else style      # [B, D]
+        z = self.encoder([x, style], **kwargs)    # input: [B, N, 3], [B, D]
+        z_mu, z_sigma = z['mu_1d'], z['sigma_1d']   # [B, N4], [B, N4]
         z_sigma = z_sigma - self.args.shapelatent.log_sigma_offset 
         dist = Normal(mu=z_mu, log_sigma=z_sigma)  # (B, F)
-        z_local = dist.sample()[0] 
+        z_local = dist.sample()[0] # [B, N4]
         all_eps.append(z_local) 
         all_log_q.append(dist.log_p(z_local)) 
         latent_list.append( [z_local, z_mu, z_sigma] )
-        all_eps = self.compose_eps(all_eps) 
+        all_eps = self.compose_eps(all_eps) # [B, D1(128)], [B, N4] -> [B, D1+N4]
         if self.args.data.cond_on_cat:
             return all_eps, all_log_q, latent_list, cls_emb 
         else:
-            return all_eps, all_log_q, latent_list
+            return all_eps, all_log_q, latent_list  # [B, D1+N4], [[B, D1], [B, N4]], [[B, D1]*3, [B, N4]*3] (sample, mean, sigma)
 
     def compose_eps(self, all_eps):
         return torch.cat(all_eps, dim=1) #  style: [B,D1], latent pts: [B,ND2]
 
-    def decompose_eps(self, all_eps):
+    def decompose_eps(self, all_eps):   # split z0 and h0.
         eps_style = all_eps[:,:self.args.latent_pts.style_dim] 
         eps_local = all_eps[:,self.args.latent_pts.style_dim:]
         return [eps_style, eps_local] 
@@ -117,7 +119,7 @@ class Model(nn.Module):
         dist = Normal(mu=z_mu, log_sigma=z_sigma)  # (B, F)
         return dist 
 
-    def global2style(self, style): ##, cls_emb=None):
+    def global2style(self, style): # style: [B, z(128), 1, 1]
         Ndim = len(style.shape) 
         if Ndim == 4:
             style = style.squeeze(-1).squeeze(-1) 
@@ -134,7 +136,7 @@ class Model(nn.Module):
         dist = Normal(mu=z_mu, log_sigma=z_sigma)  # (B, F)
         return dist 
 
-    def recont(self, x, target=None, class_label=None, cls_emb=None):
+    def recont(self, x, target=None, class_label=None, cls_emb=None, **kwargs):
         batch_size, N, point_dim = x.size()
         assert(x.shape[2] == self.input_dim), f'expect input in ' \
             f'[B,Npoint,PointDim={self.input_dim}], get: {x.shape}'
@@ -154,11 +156,12 @@ class Model(nn.Module):
             enc_input = x, cls_emb 
         else:
             enc_input = x 
-        z = self.style_encoder(enc_input) 
+        z = self.style_encoder(enc_input, **kwargs) 
         z_mu, z_sigma = z['mu_1d'], z['sigma_1d'] # log_sigma
         dist = Normal(mu=z_mu, log_sigma=z_sigma)  # (B, F)
+        # dist = Normal(mu=z_mu, log_sigma=z_sigma+1.8)  # dk: add noise directly on the vae prior.
         
-        z_global = dist.sample()[0] 
+        z_global = dist.sample()[0]     # [B, z]
         all_eps.append(z_global) 
         all_log_q.append(dist.log_p(z_global)) 
         latent_list.append( [z_global, z_mu, z_sigma] )
@@ -166,44 +169,45 @@ class Model(nn.Module):
         # ---- original encoder ---- #
         style = torch.cat([z_global, cls_emb], dim=1) if self.args.data.cond_on_cat else z_global 
         style = self.style_mlp(style) if self.style_mlp is not None else style  
-        z = self.encoder([x, style])
+        z = self.encoder([x, style], **kwargs)
         z_mu, z_sigma = z['mu_1d'], z['sigma_1d'] # log_sigma
         z_sigma = z_sigma - self.args.shapelatent.log_sigma_offset 
-        dist = Normal(mu=z_mu, log_sigma=z_sigma)  # (B, F)
-        z_local = dist.sample()[0] 
+        # dist = Normal(mu=z_mu, log_sigma=z_sigma+0.3)  # dk: add noise directly on the vae prior.
+        dist = Normal(mu=z_mu, log_sigma=z_sigma)  # (B, N*4)
+        z_local = dist.sample()[0] # [B, N*4]
         all_eps.append(z_local) 
         all_log_q.append(dist.log_p(z_local)) 
         latent_list.append( [z_local, z_mu, z_sigma] )
 
         # ---- decoder ---- #
-        x_0_pred = self.decoder(None, beta=None, context=z_local, style=style) # (B,ncenter,3) 
+        x_0_pred = self.decoder(None, beta=None, context=z_local, style=style, **kwargs) # (B,ncenter,3) 
 
         make_4d = lambda x: x.unsqueeze(-1).unsqueeze(-1) if len(x.shape) == 2 else x.unsqueeze(-1) 
         all_eps = [make_4d(e) for e in all_eps]
         all_log_q = [make_4d(e) for e in all_log_q]
 
         output = {  
-                'all_eps': all_eps,
-                'all_log_q': all_log_q,
-                'latent_list': latent_list,
-                'x_0_pred':x_0_pred,  
-                'x_0_target': x_0_target, 
+                'all_eps': all_eps, # [[B, z, 1, 1], [B, N*4, 1, 1]]
+                'all_log_q': all_log_q, # [[B, z, 1, 1], [B, N*4, 1, 1]]
+                'latent_list': latent_list, # [[z0, z_mu, z_sigma], [h0, h_mu, h_sigma]]
+                'x_0_pred':x_0_pred,  # [B, N, 3]
+                'x_0_target': x_0_target, # [B, N, 3]
                 'x_t': torch.zeros_like(x_0_target), 
                 't': torch.zeros(batch_size), 
-                'x_0': x_0_target
+                'x_0': x_0_target   # [B, N, 3]
                 }
-        output['hist/global_var'] = latent_list[0][2].exp() 
+        output['hist/global_var'] = latent_list[0][2].exp() # [B, z]
 
         if 'LatentPoint' in self.args.shapelatent.decoder_type: 
-            latent_shape = [batch_size, -1, self.latent_dim + self.input_dim] 
+            latent_shape = [batch_size, -1, self.latent_dim + self.input_dim] # [3, -1, 4]
             if 'Hir' in self.args.shapelatent.decoder_type:
                 latent_pts = z_local[:,:-self.args.latent_pts.latent_dim_ext[0]].view(*latent_shape)[:,:,:3].contiguous().clone()
             else:
-                latent_pts = z_local.view(*latent_shape)[:,:,:self.input_dim].contiguous().clone()
+                latent_pts = z_local.view(*latent_shape)[:,:,:self.input_dim].contiguous().clone()  # [B, N, 3]
 
             output['vis/latent_pts'] = latent_pts.detach().cpu().view(batch_size,
                     -1, self.input_dim) # B,N,3
-        output['final_pred'] = output['x_0_pred'] 
+        output['final_pred'] = output['x_0_pred'] # [B, N, 3]
         return output 
 
     def get_loss(self, x, writer=None, it=None, ## weight_loss_1=1, 
@@ -231,11 +235,19 @@ class Model(nn.Module):
         assert(x.shape[2] == self.input_dim)
         
         inputs = noisy_input if noisy_input is not None else x  
-        output = self.recont(inputs, target=x, class_label=class_label)
+        output = self.recont(inputs, target=x, class_label=class_label, **kwargs)
         
         x_0_pred, x_0_target = output['x_0_pred'], output['x_0_target']
+        outlier = torch.Tensor([(i.max() > 1.0e10 or np.isnan(i).any()) for i in x_0_pred.cpu().detach().numpy()]).bool()
+        if outlier.all():
+            return None
+        x_0_pred = x_0_pred[~outlier]
+        x_0_target = x_0_target[~outlier]
+        batch_size = int((~outlier).sum())
+        if 'pred_seg_weights' in kwargs.keys():
+            kwargs['pred_seg_weights'] = kwargs['pred_seg_weights'][~outlier]
         loss_0 = loss_fn(x_0_pred, x_0_target, self.args.ddpm.loss_type, 
-                self.input_dim, batch_size).mean()
+                self.input_dim, batch_size, **kwargs).mean()
         rec_loss = loss_0 
         output['print/loss_0'] = loss_0
         output['rec_loss'] = rec_loss 
@@ -244,10 +256,11 @@ class Model(nn.Module):
         ## z_global, z_sigma, z_mu = output['z_global'], output['z_sigma'], output['z_mu']
         kl_term_list = []
         weighted_kl_terms = []
-        for pairs_id, pairs in enumerate(output['latent_list']):
+        for pairs_id, pairs in enumerate(output['latent_list']):    # output['latent_list']: [[z0, z_mu, z_sigma], [h0, h_mu, h_sigma]]
             cz, cmu, csigma = pairs 
+            cz, cmu, csigma = cz[~outlier], cmu[~outlier], csigma[~outlier]
             log_sigma = csigma
-            kl_term_close = (0.5*log_sigma.exp()**2 + 
+            kl_term_close = (0.5*log_sigma.exp()**2 +   # kl divergence between q(z|x_0) and N(0,1).
                     0.5*cmu**2 - log_sigma - 0.5).view(
                     batch_size, -1) 
             if 'LatentPoint' in self.args.shapelatent.decoder_type and 'Hir' not in self.args.shapelatent.decoder_type:
@@ -255,6 +268,11 @@ class Model(nn.Module):
                     latent_shape = [batch_size, -1, self.latent_dim + self.input_dim] 
                     kl_pt = kl_term_close.view(*latent_shape)[:,:,:self.input_dim] 
                     kl_feat = kl_term_close.view(*latent_shape)[:,:,self.input_dim:] 
+                    # if 'pred_seg_weights' in kwargs.keys():
+                    #     pred_seg_weights = kwargs['pred_seg_weights']
+                    #     weighted_kl_terms.append((kl_pt.sum(2) * pred_seg_weights).sum(1) * self.args.latent_pts.weight_kl_pt) 
+                    #     weighted_kl_terms.append((kl_feat.sum(2) * pred_seg_weights).sum(1) * self.args.latent_pts.weight_kl_feat)  
+                    # else:
                     weighted_kl_terms.append(kl_pt.sum(2).sum(1) * self.args.latent_pts.weight_kl_pt) 
                     weighted_kl_terms.append(kl_feat.sum(2).sum(1) * self.args.latent_pts.weight_kl_feat)  
 
@@ -274,6 +292,7 @@ class Model(nn.Module):
                     output['print/z_var_glb%d'%pairs_id]  = (log_sigma).exp()**2 
 
             kl_term_close = kl_term_close.sum(-1)
+            # kl_term_close = kl_term_close.mean(-1)
             kl_term_list.append(kl_term_close) 
             output['print/kl_%d'%pairs_id] = kl_term_close
             output['print/z_mean_%d'%pairs_id] = cmu.mean() 
@@ -286,8 +305,16 @@ class Model(nn.Module):
             
         loss_recons = rec_loss  
         if len(weighted_kl_terms) > 0:
-            kl = kl_weight * sum(weighted_kl_terms) 
+            if 'train_weight' in kwargs.keys():
+                train_weight = kwargs['train_weight'].squeeze()
+                train_weight = train_weight[~outlier]
+                weighted_kl_terms = [x * train_weight for x in weighted_kl_terms]
+            kl = kl_weight * sum(weighted_kl_terms)
         else:
+            if 'train_weight' in kwargs.keys():
+                train_weight = kwargs['train_weight'].squeeze()
+                train_weight = train_weight[~outlier]
+                kl_term_list = [x * train_weight for x in kl_term_list]
             kl = kl_weight * sum(kl_term_list) 
         loss = kl + loss_recons * self.args.weight_recont 
         output['msg/kl'] = kl 
@@ -299,7 +326,7 @@ class Model(nn.Module):
        return w 
 
     def sample(self, num_samples=10, temp=None, decomposed_eps=[], 
-            enable_autocast=False, device_str='cuda', cls_emb=None): 
+            enable_autocast=False, device_str='cuda', cls_emb=None, **kwargs): 
         """ currently not support the samples of local level 
         Return: 
             model_output: [B,N,D]
@@ -328,7 +355,7 @@ class Model(nn.Module):
         style = z_global
         style = self.style_mlp(style) if self.style_mlp is not None else style  
         x_0_pred = self.decoder(None, beta=None, 
-                context=z_local, style=z_global) # (B,ncenter,3) 
+                context=z_local, style=z_global, **kwargs) # (B,ncenter,3) 
         ## CHECKSIZE(x_0_pred, (batch_size,self.num_points,[3,6])) 
         return x_0_pred 
 

@@ -6,12 +6,15 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 """copied and modified from https://github.com/NVlabs/LSGM/blob/5eae2f385c014f2250c3130152b6be711f6a3a5a/diffusion_discretized.py"""
-import torch
-from torch.cuda.amp import autocast
 import numpy as np
-from utils.diffusion import make_beta_schedule
-from utils import utils
+import torch
+import torch.nn.functional as F
 from loguru import logger
+from torch.cuda.amp import autocast
+from tqdm import tqdm
+
+from utils import utils
+from utils.diffusion import make_beta_schedule
 
 
 class DiffusionDiscretized(object):
@@ -35,7 +38,7 @@ class DiffusionDiscretized(object):
 
         logger.info(
             f'[Build Discrete Diffusion object] beta_start={beta_start}, beta_end={beta_end}, mode={mode}, num_steps={num_steps}')
-        self.betas = make_beta_schedule(
+        self.betas = make_beta_schedule(    # [steps]
             mode, beta_start, beta_end, num_steps).numpy()
         self._betas_init, self._alphas, self._alpha_bars, self._betas_post_init, self.snr = \
             self._generate_base_constants(
@@ -59,14 +62,14 @@ class DiffusionDiscretized(object):
         return timestep, weight_noise_power, weight_init, loss_weight, None, None
 
     def iw_quantities(self, B, *args):
-        rho = torch.rand(size=[B], device='cuda') * self._diffusion_steps
+        rho = torch.rand(size=[B], device='cuda') * self._diffusion_steps   # [B]
         timestep = rho.type(torch.int64)  # [0, T-1]
         assert(timestep.max() <= self._diffusion_steps -
                1), f'get max at {timestep.max()}'
         timestep = timestep + 1  # [1,T]
         alpha_bars = torch.gather(self._alpha_bars, 0, timestep-1)  # [0,T-1]
         weight_init = alpha_bars_sqrt = torch.sqrt(alpha_bars)
-        weight_noise_power = 1.0 - alpha_bars
+        weight_noise_power = 1.0 - alpha_bars   # FIXME: require sqrt here?
 
         weight_noise_power = weight_noise_power[:, None, None, None]
         weight_init = weight_init[:, None, None, None]
@@ -95,7 +98,7 @@ class DiffusionDiscretized(object):
 
     def sample_q(self, x_init, noise, var_t, m_t):
         """ returns a sample from diffusion process at time t 
-        x_init: [B,ND,1,1]
+        x_init: [B, z or N*4, 1, 1]
         noise: 
         vae_t: weight noise; [B,1,1,1]
         m_t: weight init; [B,1,1,1]
@@ -223,7 +226,8 @@ class DiffusionDiscretized(object):
     @torch.no_grad()
     def run_denoising_diffusion(self, model, num_samples, shape, temp=1.0,
                                 enable_autocast=False, is_image=False, prior_var=1.0,
-                                condition_input=None, given_noise=None, clip_feat=None, cls_emb=None, grid_emb=None):
+                                condition_input=None, given_noise=None, clip_feat=None, cls_emb=None, grid_emb=None,
+                                part_types=None):
         """
         Run the full denoising sampling loop.
         """
@@ -234,7 +238,7 @@ class DiffusionDiscretized(object):
         x_noisy_size = [num_samples] + shape
         if given_noise is None:
             # * np.sqrt(prior_var) * temp
-            x_noisy = torch.randn(size=x_noisy_size, device='cuda')
+            x_noisy = torch.randn(size=x_noisy_size, device='cuda') # initial random noise
         else:
             x_noisy = given_noise[0]
         output_list = {}
@@ -257,28 +261,35 @@ class DiffusionDiscretized(object):
             timestep = torch.ones(
                 num_samples, dtype=torch.int64, device='cuda') * (t+1)
             fixed_log_scales = self.get_p_log_scales(
-                timestep=timestep, stddev_type=self._denoising_stddevs)
+                timestep=timestep, stddev_type=self._denoising_stddevs) # [B]
             mixing_component = self.get_mixing_component(
-                x_noisy, timestep, enabled=model.mixed_prediction)
+                x_noisy, timestep, enabled=model.mixed_prediction)  # none
 
             # run model
             with autocast(enable_autocast):
-                if cls_emb is not None and condition_input is not None:
-                    condition_input = torch.cat(
-                        [condition_input, cls_emb], dim=1)
-                elif cls_emb is not None and condition_input is None:
-                    condition_input = cls_emb
+                # if cls_emb is not None and condition_input is not None:
+                #     condition_input = torch.cat(
+                #         [condition_input, cls_emb], dim=1)
+                # elif cls_emb is not None and condition_input is None:
+                #     condition_input = cls_emb
                 # output_list['input_x'].append(x_noisy)
                 # output_list['input_t'].append(timestep)
                 # output_list['condition_input'].append(condition_input)
 
                 pred_logits = model(x=x_noisy, t=timestep.float(),
-                                    condition_input=condition_input, clip_feat=clip_feat, **kwargs)
+                                    condition_input=condition_input, clip_feat=clip_feat, part_types=part_types, **kwargs) # [B, z, 1, 1]
                 # output_list['output_e'].append(pred_logits)
-
+                if self.cfg.latent_pts.pred_part_type:
+                    if x_noisy_size[1] != self.cfg.latent_pts.style_dim:
+                        if t == self._diffusion_steps - 1:
+                            pred_types = pred_logits.view(pred_logits.shape[0], self.cfg.shapelatent.decoder_num_points, -1)[:, :, -self.cfg.data.num_parts:]
+                        else:
+                            pred_types = pred_logits.view(pred_logits.shape[0], self.cfg.shapelatent.decoder_num_points, -1)[:, :, -self.cfg.data.num_parts:] * 0.1 + 0.9 * pred_types  # FIXME: EMA
+                            pred_types = F.softmax(pred_types, dim=-1)
+                        pred_logits = pred_logits.view(pred_logits.shape[0], self.cfg.shapelatent.decoder_num_points, -1)[:, :, :-self.cfg.data.num_parts].reshape(x_noisy_size)
                 # pred_logits = model(x_noisy, timestep.float() / self._diffusion_steps)
                 logits = utils.get_mixed_prediction(
-                    model.mixed_prediction, pred_logits, model.mixing_logit, mixing_component)
+                    model.mixed_prediction, pred_logits, model.mixing_logit, mixing_component)  # [B, z, 1, 1]
 
             output_dist = utils.decoder_output(
                 'place_holder', logits, fixed_log_scales=fixed_log_scales)
@@ -288,7 +299,7 @@ class DiffusionDiscretized(object):
                 # torch.randn(size=x_noisy_size, device='cuda')
                 noise = given_noise[1][t]
 
-            mean = self.get_q_posterior_mean(x_noisy, output_dist.means, t)
+            mean = self.get_q_posterior_mean(x_noisy, output_dist.means, t) # x_noisy: img w/ noise, output_dist.means: predicted noise, output: mean: denoised img
             if t == 0:
                 x_image = mean
             else:
@@ -299,6 +310,10 @@ class DiffusionDiscretized(object):
         if is_image:
             x_image = x_image.clamp(min=-1., max=1.)
             x_image = utils.unsymmetrize_image_data(x_image)
+        if self.cfg.latent_pts.pred_part_type and x_noisy_size[1] != self.cfg.latent_pts.style_dim:
+            _pred_types = pred_types.argmax(dim=-1)
+            _pred_types = F.one_hot(_pred_types, num_classes=self.cfg.data.num_parts).float()
+            output_list['pred_types'] = _pred_types
         model.train()
         return x_image, output_list
 
@@ -473,6 +488,9 @@ class DiffusionDiscretized(object):
         return x_noisy, output_list
 
     def get_q_posterior_mean(self, x_noisy, prediction, t):
+        """
+        Given x_t (x_noise) and noise_t (prediction), output x_{t-1}.
+        """
         # last step works differently (for better FIDs we NEVER sample in last conditional images output!)
         # Line 4 in algorithm 2 in DDPM:
         if t == 0:
@@ -503,7 +521,7 @@ class DiffusionDiscretized(object):
     @torch.no_grad()
     def run_denoising_diffusion_from_t(self, model, num_samples, shape, time_start, x_noisy,
                                        temp=1.0, enable_autocast=False, is_image=False, prior_var=1.0,
-                                       condition_input=None, given_noise=None):
+                                       condition_input=None, given_noise=None, part_types=None):
         """
         Run the full denoising sampling loop.
         given_noise: Nstep,*x_noisy_size 
@@ -535,10 +553,10 @@ class DiffusionDiscretized(object):
 
             # run model
             with autocast(enable_autocast):
-                pred_logits = model(
-                    x=x_noisy, t=timestep.float(), condition_input=condition_input)
+                pred_logits = model(    # [B, z, 1, 1], predicted noise
+                    x=x_noisy, t=timestep.float(), condition_input=condition_input, part_types=part_types)
                 # pred_logits = model(x_noisy, timestep.float() / self._diffusion_steps)
-                logits = utils.get_mixed_prediction(
+                logits = utils.get_mixed_prediction(    # logits == pred_logits
                     model.mixed_prediction, pred_logits, model.mixing_logit, mixing_component)
 
             output_dist = utils.decoder_output(
@@ -549,12 +567,12 @@ class DiffusionDiscretized(object):
                 # torch.randn(size=x_noisy_size, device='cuda')
                 noise = given_noise[1][t]
 
-            mean = self.get_q_posterior_mean(x_noisy, output_dist.means, t)
+            mean = self.get_q_posterior_mean(x_noisy, output_dist.means, t) # input: x_t and noise_t (output_dist.means), output: x_{t-1}
             if t == 0:  # < 10:
                 x_image = mean
             else:
                 x_noisy = mean + \
-                    torch.exp(output_dist.log_scales) * noise * temp
+                    torch.exp(output_dist.log_scales) * noise * temp    # add additional noise (sigma_t * z)
             output_list.append(x_noisy)
         # if is_image:
         #     x_image = x_image.clamp(min=-1., max=1.)

@@ -22,7 +22,7 @@ from utils.checker import *
 from utils import utils
 from trainers.common_fun import validate_inspect_noprior
 from torch.cuda.amp import autocast, GradScaler
-import third_party.pvcnn.functional as pvcnn_fn
+# import third_party.pvcnn.functional as pvcnn_fn
 from calmsize import size as calmsize
 
 
@@ -110,13 +110,20 @@ class Trainer(BaseTrainer):
         tr_pts = data['tr_points'].to(device)  # (B, Npoints, 3)
         batch_size = tr_pts.size(0)
         model_kwargs = {}
+        # model_kwargs['train_weight'] = data['train_weight'].to(device)
+        model_kwargs['part_types'] = data['part_types'].to(device)
+        model_kwargs['pred_seg_weights'] = data['pred_seg_weights'].to(device)
+        # model_kwargs['normals'] = data['normals'].to(device)
         with autocast(enabled=self.cfg.sde.autocast_train):
             res = self.model.get_loss(tr_pts, writer=self.writer,
                                       it=step, **model_kwargs)
-            loss = res['loss'].mean()
-            lossv = loss.detach().cpu().item()
+            if res is not None:
+                loss = res['loss'].mean()
+                lossv = loss.detach().cpu().item()
+            else:
+                print("All samples diverge!!!")
 
-        if not no_update:
+        if not no_update and res is not None:
 
             self.grad_scalar.scale(loss).backward()
             utils.average_gradients(self.model.parameters(),
@@ -132,7 +139,9 @@ class Trainer(BaseTrainer):
             for k, v in res.items():
                 if 'print/' in k and step is not None:
                     v0 = v.mean().item() if torch.is_tensor(v) else v
-                    self.writer.avg_meter(k.split('print/')[-1], v0,
+                    # self.writer.avg_meter(k.split('print/')[-1], v0,
+                    #                       step=step)
+                    self.writer.add_scalar(k.split('print/')[-1], v0,
                                           step=step)
                 if 'hist/' in k:
                     output[k] = v
@@ -179,7 +188,9 @@ class Trainer(BaseTrainer):
                                  val_class_label=val_class_label,
                                  tr_class_label=tr_class_label,
                                  has_shapelatent=True,
-                                 bound=bound, cfg=self.cfg
+                                 bound=bound, cfg=self.cfg,
+                                 part_types=self.part_types,
+                                 normals=self.normals
                                  )
 
     @torch.no_grad()

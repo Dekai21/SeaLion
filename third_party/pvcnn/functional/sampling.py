@@ -36,7 +36,7 @@ class Gather(Function):
 gather = Gather.apply
 
 
-def furthest_point_sample(coords, num_samples, normals=None):
+def furthest_point_sample(coords, num_samples, normals=None, return_indices=False):
     """
     Uses iterative furthest point sampling to select a set of npoint features that have the largest
     minimum distance to the sampled point set
@@ -51,6 +51,8 @@ def furthest_point_sample(coords, num_samples, normals=None):
     centers_coords = gather(coords, indices)
     if normals is not None:
         center_normals = gather(normals, indices)
+    if return_indices:
+        return centers_coords, indices
     return centers_coords if normals is None else (centers_coords, center_normals) 
 
 
