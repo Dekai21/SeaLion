@@ -101,6 +101,29 @@
                 </a>
               </span>
 
+              <span class="link-block">
+                <a href="https://youtu.be/aYmAM-nI78Y?si=C7aMPvK2eHpnEfiK" target="_blank"
+                class="external-link button is-normal is-rounded is-dark">
+                <span class="icon">
+                  <!-- <i class="fas fa-video"></i> -->
+                  <!-- <i class="fas fa-play"></i> -->
+                  <!-- <i class="fas fa-film"></i> -->
+                  <i class="fas fa-play-circle"></i>
+                </span>
+                <span>Video</span>
+                </a>
+              </span>
+
+              <span class="link-block">
+                <a href="https://www.bilibili.com/video/BV1b23dzUEF4/?share_source=copy_web&vd_source=d484dd59f507d51710a45ec873857c76" target="_blank"
+                class="external-link button is-normal is-rounded is-dark">
+                <span class="icon">
+                  <i class="fas fa-play-circle"></i>
+                </span>
+                <span>视频</span>
+                </a>
+              </span>
+
               <!-- ArXiv abstract Link -->
               <!-- <span class="link-block">
                 <a href="https://arxiv.org/abs/2301.02561" target="_blank"
@@ -143,17 +166,17 @@
             Denoising diffusion probabilistic models have achieved significant success in point cloud generation, 
             enabling numerous downstream applications, such as generative data augmentation and 3D model editing. 
             However, little attention has been given to generating point clouds with point-wise segmentation labels, 
-            as well as to developing evaluation metrics for this task. Therefore, in this paper, we present <strong>SeaLion</strong>, 
+            as well as to developing evaluation metrics for this task. Therefore, in this paper, we present <strong><u>SeaLion</u></strong>, 
             a novel diffusion model designed to generate high-quality and diverse point cloud with fine-grained segmentation labels. 
-            Specifically, we introduce the <strong>semantic part-aware latent point diffusion</strong> technique, 
+            Specifically, we introduce the <strong><u>semantic part-aware latent point diffusion</u></strong> technique, 
             which leverages the intermediate features of the generative models to jointly predict the noise for perturbed latent points and associated part segmentation labels during the denoising process, 
             and subsequently decodes the latent points to point clouds conditioned on part segmentation labels. 
             To effectively evaluate the quality of generated point clouds, 
-            we introduce a novel point cloud pairwise distance calculation method named <strong>part-aware Chamfer distance (p-CD)</strong>. 
+            we introduce a novel point cloud pairwise distance calculation method named <strong><u>part-aware Chamfer distance (p-CD)</u></strong>. 
             This method enables existing metrics, such as 1-NNA, to measure both the local structural quality and inter-part coherence of generated point clouds. 
             Experiments on the large-scale synthetic dataset ShapeNet and real-world medical dataset IntrA, 
             demonstrate that SeaLion achieves remarkable performance in generation quality and diversity, 
-            outperforming the existing state-of-the-art model, DiffFacto, by <strong>13.33%</strong> and <strong>6.52%</strong> on 1-NNA (p-CD) across the two datasets. 
+            outperforming the existing state-of-the-art model, DiffFacto, by <strong><u>13.33%</u></strong> and <strong><u>6.52%</u></strong> on 1-NNA (p-CD) across the two datasets. 
             Experimental analysis shows that SeaLion can be trained semi-supervised, thereby reducing the demand for labeling efforts. 
             Lastly, we validate the applicability of SeaLion in generative data augmentation for training segmentation models and the capability of SeaLion to serve as a tool for part-aware 3D shape editing.
           </p>
@@ -209,11 +232,11 @@
         <div class="content has-text-justified">
 
           <p>
-            <strong>(a) &nbsp;Training:</strong> The generative model develops semantic part awareness by being trained to reconstruct input point clouds \(x\) guided by segmentation encodings \(y\), 
+            <strong>(a) Training:</strong> The generative model develops semantic part awareness by being trained to reconstruct input point clouds \(x\) guided by segmentation encodings \(y\), 
             and to jointly predict the noise \(\hat{\epsilon}_t\) for perturbed latent points \(h_t\) and segmentation labels \(\hat{y}_t\) at diffusion step \(t\).
           </p>
           <p>
-            <strong>(b) &nbsp;Inference:</strong> Starting from Gaussian noise, the diffusion modules generate \(z_0\), \(h_0\), and \(\hat{y}\). 
+            <strong>(b) Inference:</strong> Starting from Gaussian noise, the diffusion modules generate \(z_0\), \(h_0\), and \(\hat{y}\). 
             Then, the conditional decoding guided by \(z_0\) and \(\hat{y}\) generates a point cloud \(\hat{x}\) that maintains strong alignment with \(\hat{y}\).
           </p>
         </div>
@@ -239,6 +262,34 @@
             to separately predict the noise \(\hat{\epsilon_t}\) and the segmentation encoding \(\hat{y_t}\).
           </p>
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section hero" id="Pipeline">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-five-fifths">
+        <h2 class="title is-3">Part-aware Evaluation Metrics</h2>
+        <div class="content has-text-justified">
+            <p>
+              Existing Chamfer Distance-based evaluation metrics, such as 1-NNA, Coverage, and MMD, 
+              are limited to evaluating unlabeled point cloud generation. 
+              Although DiffFacto evaluates generated point clouds with segmentation labels, 
+              it focuses only on the geometric quality of individual semantic parts, without considering inter-part coherence.
+              In this work, we propose <strong>part-aware Chamfer Distance</strong>-based evaluation metrics: <strong>1-NNA (p-CD)</strong>, <strong>COV (p-CD)</strong>, and <strong>MMD (p-CD)</strong>. 
+              These metrics assess not only the geometric quality of the generated point clouds, but also the structural coherence between different semantic parts.
+            </p>
+            <p>  
+              A detailed discussion can be found in Section 3.4 of the paper and in the videos <a href="https://youtu.be/aYmAM-nI78Y?si=F4-wdjuUH0YwulyR&t=164" target="_blank">[English]</a>
+              <a href="https://www.bilibili.com/video/BV1b23dzUEF4/?share_source=copy_web&vd_source=d484dd59f507d51710a45ec873857c76&t=161" target="_blank">[中文]</a>.
+            </p>
+        </div>
+        <img src="images/p_CD.png" alt="MY ALT TEXT" style="width: 80%;"/>
+        <p>
+          <strong>Figure 4:</strong> Pseudo code for labeled point cloud evaluation in <strong>DiffFacto</strong> and <strong>SeaLion</strong>.
+        </p>
       </div>
     </div>
   </div>
@@ -320,6 +371,49 @@
   </div>
 </section>
 
+<section class="hero teaser" id="Video-Introduction">
+  <div class="container is-max-desktop">
+    <div class="hero-body has-text-centered">
+      <h2 class="title is-3" style="margin-top: 50px;">Visualization of the Generation Process</h2>
+      <div class="videos-grid">
+        <!-- Video 1 -->
+        <div class="video-item-2">
+          <video poster="Bracket1" autoplay controls muted loop height="100%">
+            <source src="videos/bracket_denoise_003-0119.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Bracket 1
+            </p>
+          </div>
+        </div>
+        <!-- Video 2 -->
+        <div class="video-item-2">
+          <video poster="" autoplay controls muted loop height="100%">
+            <source src="videos/bracket_denoise_003-0120.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Bracket 2
+            </p>
+          </div>
+        </div>
+        <!-- Video 3 -->
+        <div class="video-item-2">
+          <video poster="" autoplay controls muted loop height="100%">
+            <source src="videos/bracket_denoise_003-0131.mp4" type="video/mp4">
+          </video>
+          <div class="content has-text-centered">
+            <p>
+              Bracket 3
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <style>
   .videos-grid {
     display: flex;
@@ -334,6 +428,11 @@
     max-width: calc(50% - 20px);
     box-sizing: border-box;
   }
+  .video-item-2 {
+    flex: 1 1 calc(33% - 20px); /* 3 columns */
+    max-width: calc(33% - 20px);
+    box-sizing: border-box;
+  }
   video {
     width: 100%;
     height: auto;
@@ -343,7 +442,8 @@
   }
   strong {
     letter-spacing: normal;
-    word-spacing: -3px;
+    word-spacing: -0px;
+    white-space: normal;
   }
   .green-text {
     color: rgb(84, 179, 69);
