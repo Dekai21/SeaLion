@@ -51,6 +51,7 @@ Lastly, we validate the applicability of SeaLion in generative data augmentation
     ``` 
         conda env create --name lion_env --file=env.yaml 
         conda activate lion_env
+        pip install git+https://github.com/openai/CLIP.git
     ```
     Tested with conda version 22.9.0
 
